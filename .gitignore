@@ -1,0 +1,5 @@
+# .gitignore
+
+urun_veritabani/
+.env
+__pycache__/

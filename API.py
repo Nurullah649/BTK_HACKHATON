@@ -19,8 +19,8 @@ CORS(app)
 
 API_KEY="""AIzaSyAnI7dxlH0isxzqwqX-qkajlg2UC4zIssU"""
 
-DB_PATH = "../urun_veritabani"
-CATEGORIES_FILENAME = "../kategoriler.json"
+DB_PATH = "urun_veritabani"
+CATEGORIES_FILENAME = "kategoriler.json"
 EMBEDDING_MODEL = "models/text-embedding-004"
 GENERATION_MODEL = "gemini-2.5-pro"
 
