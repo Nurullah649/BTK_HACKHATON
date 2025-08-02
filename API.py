@@ -15,7 +15,7 @@ app = Flask(__name__)
 CORS(app)
 
 # --- KULLANICININ İSTEĞİ ÜZERİNE DEĞİŞTİRİLMEDİ ---
-API_KEY = """AIzaSyAnI7dxlH0isxzqwqX-qkajlg2UC4zIssU"""
+API_KEY="""AIzaSyAnI7dxlH0isxzqwqX-qkajlg2UC4zIssU"""
 GENERATION_MODEL = "gemini-2.5-pro"
 # ---------------------------------------------
 
@@ -94,16 +94,17 @@ def extract_query_details(query_text, all_categories):
     target_collection = None
     found_category = None
 
-    # --- GELİŞMİŞ KATEGORİ BULMA MANTIĞI ---
+    # --- EN GELİŞMİŞ VE ESNEK KATEGORİ BULMA MANTIĞI ---
     # En uzun kategori adından başlayarak daha doğru eşleşme hedeflenir.
     sorted_categories = sorted(all_categories, key=len, reverse=True)
     for category in sorted_categories:
         # Kategoriyi de normalize et
         normalized_category = normalize_for_matching(category)
 
-        # Kelime sınırlarını kontrol eden regex ile normalize edilmiş metinlerde ara
-        pattern = r'\b' + re.escape(normalized_category) + r'\b'
-        if re.search(pattern, normalized_query):
+        # Regex kullanımını kaldırıp daha esnek bir 'in' kontrolü yapıyoruz.
+        # Bu sayede "aspiratorler" sorgusu "aspirator" kategorisiyle eşleşir.
+        # Sıralama sayesinde "ekran kartı" gibi daha uzun eşleşmeler önceliklendirilir.
+        if normalized_category in normalized_query:
             # Eşleşme bulununca, ORİJİNAL kategori adını kullan
             found_category = category
             target_collection = sanitize_collection_name(category)
