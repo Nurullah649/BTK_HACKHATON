@@ -15,12 +15,11 @@ app = Flask(__name__)
 CORS(app)
 
 # --- KULLANICININ İSTEĞİ ÜZERİNE DEĞİŞTİRİLMEDİ ---
-API_KEY="""AIzaSyAnI7dxlH0isxzqwqX-qkajlg2UC4zIssU"""
+API_KEY = """AIzaSyAnI7dxlH0isxzqwqX-qkajlg2UC4zIssU"""
 GENERATION_MODEL = "gemini-2.5-pro"
 # ---------------------------------------------
 
 # --- CLOUD RUN İÇİN GEREKLİ DÜZELTME ---
-# Dosya yolları, projenin ana klasörüne göre ayarlandı.
 DB_PATH = "urun_veritabani"
 CATEGORIES_FILENAME = "kategoriler.json"
 # -----------------------------------------
@@ -38,8 +37,11 @@ try:
     from VeriTabanı import sanitize_collection_name
 except ImportError:
     print("HATA: VeriTabanı.py dosyası bulunamadı veya import edilemedi.")
+
+
     def sanitize_collection_name(name):
         return name.lower().replace(' ', '_')
+
 
 def initialize_services():
     """API ve Veritabanı istemcilerini başlatır."""
@@ -60,37 +62,70 @@ def initialize_services():
         print(f"HATA: Servisler başlatılamadı: {e}")
         sys.exit(1)
 
+
+def normalize_for_matching(text: str) -> str:
+    """
+    Bir metni, Türkçe karakterleri Latin karşılıklarına çevirerek ve
+    küçük harfe dönüştürerek karşılaştırmaya hazır hale getirir.
+    Örnek: "Buzdolabı" -> "buzdolabi"
+    """
+    replacements = {
+        'ı': 'i', 'İ': 'i',
+        'ğ': 'g', 'Ğ': 'g',
+        'ü': 'u', 'Ü': 'u',
+        'ş': 's', 'Ş': 's',
+        'ö': 'o', 'Ö': 'o',
+        'ç': 'c', 'Ç': 'c',
+    }
+    text_lower = text.lower()
+    for old, new in replacements.items():
+        text_lower = text_lower.replace(old, new)
+    return text_lower
+
+
 def extract_query_details(query_text, all_categories):
     """Kullanıcı sorgusunu analiz eder."""
     print(f"Sorgu analizi başlatıldı: '{query_text}'")
-    query_lower = query_text.lower()
+
+    # Karşılaştırma için hem sorguyu hem de kategori listesini normalize et
+    normalized_query = normalize_for_matching(query_text)
+    print(f"Normalize edilmiş sorgu: '{normalized_query}'")
+
     target_collection = None
     found_category = None
 
-    # --- KATEGORİ BULMA SORUNU İÇİN İYİLEŞTİRME ---
+    # --- GELİŞMİŞ KATEGORİ BULMA MANTIĞI ---
+    # En uzun kategori adından başlayarak daha doğru eşleşme hedeflenir.
     sorted_categories = sorted(all_categories, key=len, reverse=True)
     for category in sorted_categories:
-        pattern = r'\b' + re.escape(category.lower()) + r'\b'
-        if re.search(pattern, query_lower, re.IGNORECASE | re.UNICODE):
+        # Kategoriyi de normalize et
+        normalized_category = normalize_for_matching(category)
+
+        # Kelime sınırlarını kontrol eden regex ile normalize edilmiş metinlerde ara
+        pattern = r'\b' + re.escape(normalized_category) + r'\b'
+        if re.search(pattern, normalized_query):
+            # Eşleşme bulununca, ORİJİNAL kategori adını kullan
             found_category = category
             target_collection = sanitize_collection_name(category)
-            print(f"Kategori bulundu: '{found_category}' -> Koleksiyon: '{target_collection}'")
-            break
+            print(
+                f"Kategori bulundu: Orijinal='{found_category}', Normalize='{normalized_category}' -> Koleksiyon: '{target_collection}'")
+            break  # İlk ve en iyi eşleşmeyi bulduktan sonra döngüden çık
+
     if not target_collection:
-        print(f"UYARI: Sorgu '{query_lower}' içinde bilinen bir kategori bulunamadı.")
+        print(f"UYARI: Sorgu '{query_text}' içinde bilinen bir kategori bulunamadı.")
     # ------------------------------------------------
 
     search_type = 'default'
-    if 'fiyat performans' in query_lower or 'f/p' in query_lower:
+    if 'fiyat performans' in normalized_query or 'f/p' in normalized_query:
         search_type = 'price_performance'
-    elif 'en ucuz' in query_lower:
+    elif 'en ucuz' in normalized_query:
         search_type = 'cheapest'
-    elif 'en pahalı' in query_lower:
+    elif 'en pahali' in normalized_query:  # 'pahalı' -> 'pahali'
         search_type = 'most_expensive'
 
     where_filter = {}
     try:
-        prices_str = re.findall(r'(\d[\d\.,]*)', query_lower)
+        prices_str = re.findall(r'(\d[\d\.,]*)', query_text)  # Fiyatı orijinal metinden al
         prices = sorted([float(p.replace('.', '').replace(',', '')) for p in prices_str])
         if len(prices) >= 2:
             where_filter = {"$and": [{"min_price": {"$gte": prices[0]}}, {"min_price": {"$lte": prices[1]}}]}
@@ -108,6 +143,7 @@ def extract_query_details(query_text, all_categories):
         "search_text": query_text,
         "search_type": search_type
     }
+
 
 def get_best_product_match(client, query_details):
     """Doğru koleksiyonda, arama tipine göre en uygun ürünü bulur."""
@@ -155,6 +191,7 @@ def get_best_product_match(client, query_details):
     except Exception as e:
         return None, f"Arama hatası: {e}"
 
+
 def generate_final_prompt(user_question, product_context):
     """Prompt şablonunu, bulunan ürün bilgileriyle doldurur."""
     urun_adi = product_context.get('product_name', 'N/A')
@@ -189,6 +226,7 @@ Sen, müşteri memnuniyetini ve satışı en üst düzeye çıkarmayı hedefleye
 """
     return prompt
 
+
 @app.route('/chat', methods=['POST'])
 def chat_handler():
     """Gelen POST isteklerini işleyen ana API fonksiyonu."""
@@ -199,12 +237,14 @@ def chat_handler():
     print(f"Yeni istek alındı: {user_question}")
     query_details = extract_query_details(user_question, ALL_CATEGORIES)
     if not query_details["collection"]:
-        sample_categories = random.sample(ALL_CATEGORIES, min(5, len(ALL_CATEGORIES))) if ALL_CATEGORIES else ["Örnek Kategori"]
+        sample_categories = random.sample(ALL_CATEGORIES, min(5, len(ALL_CATEGORIES))) if ALL_CATEGORIES else [
+            "Örnek Kategori"]
         kategori_onerisi = f"Sorgunuzda bir kategori belirtmediniz veya anlayamadım. Lütfen sorgunuza bir kategori ekleyin. Örnekler: {', '.join(repr(c) for c in sample_categories)}"
         return jsonify({"answer": kategori_onerisi, "product_context": None})
     product_context, status = get_best_product_match(CLIENT, query_details)
     if not product_context:
-        return jsonify({"answer": f"Üzgünüm, bu isteğe uygun bir ürün bulamadım. (Sebep: {status})", "product_context": None})
+        return jsonify(
+            {"answer": f"Üzgünüm, bu isteğe uygun bir ürün bulamadım. (Sebep: {status})", "product_context": None})
     final_prompt = generate_final_prompt(user_question, product_context)
     try:
         response = MODEL.generate_content(final_prompt)
@@ -212,6 +252,7 @@ def chat_handler():
     except Exception as e:
         print(f"HATA: Google API'den cevap alınırken bir sorun oluştu: {e}")
         return jsonify({"error": f"Google API'den cevap alınırken bir sorun oluştu: {e}"}), 500
+
 
 # --- UYGULAMAYI BAŞLATMA ---
 if __name__ == "__main__":
