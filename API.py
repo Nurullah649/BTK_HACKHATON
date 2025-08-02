@@ -15,8 +15,8 @@ app = Flask(__name__)
 CORS(app)
 
 # --- KULLANICININ İSTEĞİ ÜZERİNE DEĞİŞTİRİLMEDİ ---
-API_KEY="""AIzaSyAnI7dxlH0isxzqwqX-qkajlg2UC4zIssU"""
-GENERATION_MODEL = "gemini-2.5-pro"
+API_KEY = """AIzaSyAnI7dxlH0isxzqwqX-qkajlg2UC4zIssU"""
+GENERATION_MODEL = "gemini-1.5-pro-latest"
 # ---------------------------------------------
 
 # --- CLOUD RUN İÇİN GEREKLİ DÜZELTME ---
@@ -30,7 +30,7 @@ EMBEDDING_MODEL = "models/text-embedding-004"
 CLIENT = None
 MODEL = None
 AVAILABLE_COLLECTIONS = []
-ALL_CATEGORIES = []
+ALL_CATEGORIES = []  # Kategorilerin orijinal hallerini tutan bir liste olacak
 
 # VeriTabanı.py'den fonksiyonu import et
 try:
@@ -44,7 +44,7 @@ except ImportError:
 
 
 def initialize_services():
-    """API ve Veritabanı istemcilerini başlatır."""
+    """API ve Veritabanı istemcilerini başlatır ve kategorileri yükler."""
     global CLIENT, MODEL, AVAILABLE_COLLECTIONS, ALL_CATEGORIES
     if not API_KEY:
         print("HATA: API_KEY bulunamadı.")
@@ -55,78 +55,72 @@ def initialize_services():
         CLIENT = chromadb.PersistentClient(path=DB_PATH)
         MODEL = genai.GenerativeModel(GENERATION_MODEL)
         AVAILABLE_COLLECTIONS = [c.name for c in CLIENT.list_collections()]
+
+        # Kategorileri yükle ve en uzundan kısaya doğru sırala
         with open(CATEGORIES_FILENAME, 'r', encoding='utf-8') as f:
-            ALL_CATEGORIES = json.load(f)
+            categories_list = json.load(f)
+            # Daha doğru eşleşme için en uzun kategori adından başlayarak sırala
+            ALL_CATEGORIES = sorted(categories_list, key=len, reverse=True)
+
         print("✅ Servisler başarıyla başlatıldı.")
+        print(f"{len(ALL_CATEGORIES)} kategori yüklendi.")
+
     except Exception as e:
         print(f"HATA: Servisler başlatılamadı: {e}")
         sys.exit(1)
 
 
-def normalize_for_matching(text: str) -> str:
+def extract_query_details(query_text, all_categories_list):
     """
-    Bir metni, Türkçe karakterleri Latin karşılıklarına çevirerek ve
-    küçük harfe dönüştürerek karşılaştırmaya hazır hale getirir.
-    Örnek: "Buzdolabı" -> "buzdolabi"
+    Kullanıcı sorgusunu analiz ederek kategoriyi, arama metnini ve diğer
+    detayları çıkarır. Eşleştirme büyük/küçük harfe duyarsızdır.
     """
-    replacements = {
-        'ı': 'i', 'İ': 'i',
-        'ğ': 'g', 'Ğ': 'g',
-        'ü': 'u', 'Ü': 'u',
-        'ş': 's', 'Ş': 's',
-        'ö': 'o', 'Ö': 'o',
-        'ç': 'c', 'Ç': 'c',
-    }
-    text_lower = text.lower()
-    for old, new in replacements.items():
-        text_lower = text_lower.replace(old, new)
-    return text_lower
-
-
-def extract_query_details(query_text, all_categories):
-    """Kullanıcı sorgusunu analiz eder."""
     print(f"Sorgu analizi başlatıldı: '{query_text}'")
 
-    # Karşılaştırma için hem sorguyu hem de kategori listesini normalize et
-    normalized_query = normalize_for_matching(query_text)
-    print(f"Normalize edilmiş sorgu: '{normalized_query}'")
+    lower_query = query_text.lower()  # Karşılaştırma için sorguyu küçük harfe çevir
+    print(f"Küçük harfe çevrilmiş sorgu: '{lower_query}'")
 
     target_collection = None
     found_category = None
+    search_text = query_text  # Varsayılan olarak orijinal sorguyu kullan
 
-    # --- EN GELİŞMİŞ VE ESNEK KATEGORİ BULMA MANTIĞI ---
-    # En uzun kategori adından başlayarak daha doğru eşleşme hedeflenir.
-    sorted_categories = sorted(all_categories, key=len, reverse=True)
-    for category in sorted_categories:
-        # Kategoriyi de normalize et
-        normalized_category = normalize_for_matching(category)
-
-        # Regex kullanımını kaldırıp daha esnek bir 'in' kontrolü yapıyoruz.
-        # Bu sayede "aspiratorler" sorgusu "aspirator" kategorisiyle eşleşir.
-        # Sıralama sayesinde "ekran kartı" gibi daha uzun eşleşmeler önceliklendirilir.
-        if normalized_category in normalized_query:
-            # Eşleşme bulununca, ORİJİNAL kategori adını kullan
+    # Sorguda kategori adlarını ara (büyük/küçük harf duyarsız)
+    # Liste zaten uzunluk sırasına göre olduğu için ilk bulunan en iyi eşleşmedir.
+    for category in all_categories_list:
+        if category.lower() in lower_query:
             found_category = category
-            target_collection = sanitize_collection_name(category)
-            print(
-                f"Kategori bulundu: Orijinal='{found_category}', Normalize='{normalized_category}' -> Koleksiyon: '{target_collection}'")
+            target_collection = sanitize_collection_name(found_category)
+            print(f"Kategori bulundu: '{found_category}' -> Koleksiyon: '{target_collection}'")
+
+            # Kategori adını ve olası eklerini sorgudan temizle.
+            # Bu, embedding'in daha saf ürün özelliklerine odaklanmasını sağlar.
+            # Örnek: "En iyi Ekran Kartları" -> "En iyi"
+            cleaned_query = re.sub(r'\b' + re.escape(found_category) + r'(\w*)?\b', '', query_text,
+                                   flags=re.IGNORECASE).strip()
+
+            # Eğer temizleme sonrası sorgu anlamlı bir metin içeriyorsa onu kullan
+            if len(cleaned_query.split()) > 1:  # Birden fazla kelime kaldıysa
+                search_text = cleaned_query
+                print(f"Sorgu temizlendi. Yeni arama metni: '{search_text}'")
+            else:
+                print("Temizlenmiş sorgu çok kısa, orijinal metin kullanılıyor.")
+
             break  # İlk ve en iyi eşleşmeyi bulduktan sonra döngüden çık
 
     if not target_collection:
         print(f"UYARI: Sorgu '{query_text}' içinde bilinen bir kategori bulunamadı.")
-    # ------------------------------------------------
 
     search_type = 'default'
-    if 'fiyat performans' in normalized_query or 'f/p' in normalized_query:
+    if 'fiyat performans' in lower_query or 'f/p' in lower_query:
         search_type = 'price_performance'
-    elif 'en ucuz' in normalized_query:
+    elif 'en ucuz' in lower_query:
         search_type = 'cheapest'
-    elif 'en pahali' in normalized_query:  # 'pahalı' -> 'pahali'
+    elif 'en pahalı' in lower_query:  # Orijinal Türkçe karakterle kontrol
         search_type = 'most_expensive'
 
     where_filter = {}
     try:
-        prices_str = re.findall(r'(\d[\d\.,]*)', query_text)  # Fiyatı orijinal metinden al
+        prices_str = re.findall(r'(\d[\d\.,]*)', query_text)
         prices = sorted([float(p.replace('.', '').replace(',', '')) for p in prices_str])
         if len(prices) >= 2:
             where_filter = {"$and": [{"min_price": {"$gte": prices[0]}}, {"min_price": {"$lte": prices[1]}}]}
@@ -141,7 +135,7 @@ def extract_query_details(query_text, all_categories):
     return {
         "collection": target_collection,
         "where_filter": where_filter,
-        "search_text": query_text,
+        "search_text": search_text,  # Temizlenmiş veya orijinal arama metni
         "search_type": search_type
     }
 
@@ -154,12 +148,15 @@ def get_best_product_match(client, query_details):
     try:
         collection = client.get_collection(name=collection_name)
         n_results = 50 if query_details['search_type'] != 'default' else 20
+
+        print(f"Embedding için kullanılan arama metni: '{query_details['search_text']}'")
         result = genai.embed_content(
             model=EMBEDDING_MODEL,
             content=[query_details["search_text"]],
             task_type="RETRIEVAL_QUERY"
         )
         query_embedding = result['embedding']
+
         results = collection.query(
             query_embeddings=query_embedding,
             n_results=n_results,
@@ -167,8 +164,10 @@ def get_best_product_match(client, query_details):
         )
         if not results or not results.get('metadatas') or not results['metadatas'][0]:
             return None, "Bu kriterlere uygun ürün bulunamadı"
+
         candidates = results['metadatas'][0]
         search_type = query_details['search_type']
+
         if search_type == 'price_performance':
             best_product = None
             max_score = -1
@@ -235,20 +234,27 @@ def chat_handler():
     if not data or 'query' not in data:
         return jsonify({"error": "Geçersiz istek: 'query' alanı eksik."}), 400
     user_question = data['query']
-    print(f"Yeni istek alındı: {user_question}")
+    print(f"\n--- Yeni İstek Alındı: {user_question} ---")
+
     query_details = extract_query_details(user_question, ALL_CATEGORIES)
+
     if not query_details["collection"]:
         sample_categories = random.sample(ALL_CATEGORIES, min(5, len(ALL_CATEGORIES))) if ALL_CATEGORIES else [
             "Örnek Kategori"]
-        kategori_onerisi = f"Sorgunuzda bir kategori belirtmediniz veya anlayamadım. Lütfen sorgunuza bir kategori ekleyin. Örnekler: {', '.join(repr(c) for c in sample_categories)}"
+        kategori_onerisi = f"Sorgunuzda bir kategori belirtmediniz veya anlayamadım. Lütfen sorgunuza bir kategori ekleyin. Örnekler: {', '.join(sample_categories)}"
         return jsonify({"answer": kategori_onerisi, "product_context": None})
+
     product_context, status = get_best_product_match(CLIENT, query_details)
+
     if not product_context:
         return jsonify(
             {"answer": f"Üzgünüm, bu isteğe uygun bir ürün bulamadım. (Sebep: {status})", "product_context": None})
+
     final_prompt = generate_final_prompt(user_question, product_context)
+
     try:
         response = MODEL.generate_content(final_prompt)
+        print(f"Model Cevabı Oluşturuldu. Sonuç başarılı.")
         return jsonify({"answer": response.text, "product_context": product_context})
     except Exception as e:
         print(f"HATA: Google API'den cevap alınırken bir sorun oluştu: {e}")
@@ -258,6 +264,5 @@ def chat_handler():
 # --- UYGULAMAYI BAŞLATMA ---
 if __name__ == "__main__":
     initialize_services()
-    # --- CLOUD RUN İÇİN GEREKLİ DÜZELTME ---
     # Cloud Run'ın verdiği PORT çevre değişkenini kullanır.
     app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 8080)), debug=False)
