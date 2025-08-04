@@ -15,8 +15,11 @@ app = Flask(__name__)
 CORS(app)
 
 # --- KULLANICININ İSTEĞİ ÜZERİNE DEĞİŞTİRİLMEDİ ---
-API_KEY = """AIzaSyAnI7dxlH0isxzqwqX-qkajlg2UC4zIssU"""
-GENERATION_MODEL = "gemini-1.5-pro-latest"
+# UYARI: API anahtarını koda bu şekilde yazmak GÜVENLİ DEĞİLDİR.
+# Bu kodun bir sonraki versiyonunda bu anahtarın ortam değişkenlerinden (environment variables)
+# yüklenmesi şiddetle tavsiye edilir.
+API_KEY="""AIzaSyAnI7dxlH0isxzqwqX-qkajlg2UC4zIssU"""
+GENERATION_MODEL = "gemini-2.5-pro"
 # ---------------------------------------------
 
 # --- CLOUD RUN İÇİN GEREKLİ DÜZELTME ---
@@ -30,17 +33,15 @@ EMBEDDING_MODEL = "models/text-embedding-004"
 CLIENT = None
 MODEL = None
 AVAILABLE_COLLECTIONS = []
-ALL_CATEGORIES = []  # Kategorilerin orijinal hallerini tutan bir liste olacak
+ALL_CATEGORIES = []
 
 # VeriTabanı.py'den fonksiyonu import et
 try:
     from VeriTabanı import sanitize_collection_name
 except ImportError:
-    print("HATA: VeriTabanı.py dosyası bulunamadı veya import edilemedi.")
-
-
+    print("UYARI: VeriTabanı.py dosyası bulunamadı. Standart fonksiyon kullanılacak.")
     def sanitize_collection_name(name):
-        return name.lower().replace(' ', '_')
+        return re.sub(r'\s+', '_', name.lower())
 
 
 def initialize_services():
@@ -56,7 +57,6 @@ def initialize_services():
         MODEL = genai.GenerativeModel(GENERATION_MODEL)
         AVAILABLE_COLLECTIONS = [c.name for c in CLIENT.list_collections()]
 
-        # Kategorileri yükle ve en uzundan kısaya doğru sırala
         with open(CATEGORIES_FILENAME, 'r', encoding='utf-8') as f:
             categories_list = json.load(f)
             # Daha doğru eşleşme için en uzun kategori adından başlayarak sırala
@@ -69,73 +69,107 @@ def initialize_services():
         print(f"HATA: Servisler başlatılamadı: {e}")
         sys.exit(1)
 
+# --- YENİ EKLENEN YARDIMCI FONKSİYONLAR ---
+
+def convert_words_to_numbers(text):
+    """Sorgu metnindeki 'bin', 'milyon' gibi sayısal ifadeleri rakamlara çevirir."""
+    text = text.lower()
+    # Örnek: "50 bin", "100k", "1.5 milyon" gibi ifadeleri dönüştürür
+    # Not: Bu fonksiyon temel durumları kapsar, çok karmaşık metinler için daha gelişmiş bir yapı gerekebilir.
+    text = re.sub(r'(\d[\d\.,]*)\s*(?:bin|k)\b', lambda m: str(int(parse_turkish_price(m.group(1)) * 1000)), text)
+    text = re.sub(r'(\d[\d\.,]*)\s*milyon\b', lambda m: str(int(parse_turkish_price(m.group(1)) * 1000000)), text)
+    # Tek başına kullanılan ifadeler
+    text = re.sub(r'\byüz\s+bin\b', '100000', text)
+    text = re.sub(r'\bbir\s+milyon\b', '1000000', text)
+    text = re.sub(r'\bbin\b', '1000', text)
+    return text
+
+def parse_turkish_price(price_str):
+    """Türkçe fiyat formatını (örn: "1.234,56") float sayıya çevirir."""
+    if not isinstance(price_str, str):
+        return float(price_str)
+    try:
+        # Binlik ayırıcı olan noktaları kaldır
+        cleaned_str = price_str.replace('.', '')
+        # Ondalık ayırıcı olan virgülü noktaya çevir
+        cleaned_str = cleaned_str.replace(',', '.')
+        return float(cleaned_str)
+    except (ValueError, TypeError):
+        return 0.0 # Hata durumunda 0 döndür
+
+# --- GÜNCELLENEN FONKSİYONLAR ---
 
 def extract_query_details(query_text, all_categories_list):
     """
-    Kullanıcı sorgusunu analiz ederek kategoriyi, arama metnini ve diğer
-    detayları çıkarır. Eşleştirme büyük/küçük harfe duyarsızdır.
+    Kullanıcı sorgusunu analiz ederek kategoriyi, arama metnini, fiyat aralığını
+    ve diğer detayları çıkarır.
     """
     print(f"Sorgu analizi başlatıldı: '{query_text}'")
 
-    lower_query = query_text.lower()  # Karşılaştırma için sorguyu küçük harfe çevir
-    print(f"Küçük harfe çevrilmiş sorgu: '{lower_query}'")
+    # 1. Adım: Sorgudaki "bin", "milyon" gibi ifadeleri sayılara çevir
+    processed_query = convert_words_to_numbers(query_text)
+    print(f"Sayısal ifadeler işlendi: '{processed_query}'")
 
+    lower_query = processed_query.lower()
     target_collection = None
     found_category = None
-    search_text = query_text  # Varsayılan olarak orijinal sorguyu kullan
+    search_text = processed_query # Varsayılan olarak işlenmiş sorguyu kullan
 
-    # Sorguda kategori adlarını ara (büyük/küçük harf duyarsız)
-    # Liste zaten uzunluk sırasına göre olduğu için ilk bulunan en iyi eşleşmedir.
+    # 2. Adım: Kategori tespiti (En uzundan kısaya doğru ve kelime sınırlarına dikkat ederek)
     for category in all_categories_list:
-        if category.lower() in lower_query:
+        # \b ile kelime sınırı kontrolü, "RAM" gibi kısa isimlerin "Kamera" gibi
+        # kelimelerin içinde hatalı eşleşmesini önler.
+        if re.search(r'\b' + re.escape(category.lower()) + r'\b', lower_query):
             found_category = category
             target_collection = sanitize_collection_name(found_category)
             print(f"Kategori bulundu: '{found_category}' -> Koleksiyon: '{target_collection}'")
 
-            # Kategori adını ve olası eklerini sorgudan temizle.
-            # Bu, embedding'in daha saf ürün özelliklerine odaklanmasını sağlar.
-            # Örnek: "En iyi Ekran Kartları" -> "En iyi"
-            cleaned_query = re.sub(r'\b' + re.escape(found_category) + r'(\w*)?\b', '', query_text,
+            # Kategori adını sorgudan temizle
+            cleaned_query = re.sub(r'\b' + re.escape(found_category) + r'(\w*)?\b', '', processed_query,
                                    flags=re.IGNORECASE).strip()
 
-            # Eğer temizleme sonrası sorgu anlamlı bir metin içeriyorsa onu kullan
-            if len(cleaned_query.split()) > 1:  # Birden fazla kelime kaldıysa
+            # Eğer temizleme sonrası sorgu boş değilse onu kullan
+            if cleaned_query:
                 search_text = cleaned_query
                 print(f"Sorgu temizlendi. Yeni arama metni: '{search_text}'")
             else:
-                print("Temizlenmiş sorgu çok kısa, orijinal metin kullanılıyor.")
-
-            break  # İlk ve en iyi eşleşmeyi bulduktan sonra döngüden çık
+                print("Temizlenmiş sorgu boş, orijinal metin kullanılıyor.")
+            break
 
     if not target_collection:
         print(f"UYARI: Sorgu '{query_text}' içinde bilinen bir kategori bulunamadı.")
 
+    # 3. Adım: Arama tipini belirle
     search_type = 'default'
     if 'fiyat performans' in lower_query or 'f/p' in lower_query:
         search_type = 'price_performance'
     elif 'en ucuz' in lower_query:
         search_type = 'cheapest'
-    elif 'en pahalı' in lower_query:  # Orijinal Türkçe karakterle kontrol
+    elif 'en pahalı' in lower_query:
         search_type = 'most_expensive'
 
+    # 4. Adım: Fiyat aralığını ve filtreleri çıkar (Geliştirilmiş parser ile)
     where_filter = {}
     try:
-        prices_str = re.findall(r'(\d[\d\.,]*)', query_text)
-        prices = sorted([float(p.replace('.', '').replace(',', '')) for p in prices_str])
+        # Sadece sayısal karakterleri ve ayraçları içeren kısımları bul
+        prices_str = re.findall(r'(\d[\d\.,]*)', search_text)
+        prices = sorted([p for p in (parse_turkish_price(s) for s in prices_str) if p > 0])
         if len(prices) >= 2:
             where_filter = {"$and": [{"min_price": {"$gte": prices[0]}}, {"min_price": {"$lte": prices[1]}}]}
         elif len(prices) == 1:
             price_val = prices[0]
-            price_min = price_val * 0.8
-            price_max = price_val * 1.2
-            where_filter = {"$and": [{"min_price": {"$gte": price_min}}, {"min_price": {"$lte": price_max}}]}
-    except (ValueError, TypeError):
-        pass
+            # Fiyat etrafında %20'lik bir aralık belirle
+            where_filter = {"$and": [{"min_price": {"$gte": price_val * 0.8}}, {"min_price": {"$lte": price_val * 1.2}}]}
+        if where_filter:
+             print(f"Fiyat filtresi oluşturuldu: {where_filter}")
+    except Exception as e:
+        print(f"Fiyat filtresi oluşturulurken hata: {e}")
+
 
     return {
         "collection": target_collection,
         "where_filter": where_filter,
-        "search_text": search_text,  # Temizlenmiş veya orijinal arama metni
+        "search_text": search_text,
         "search_type": search_type
     }
 
@@ -144,7 +178,7 @@ def get_best_product_match(client, query_details):
     """Doğru koleksiyonda, arama tipine göre en uygun ürünü bulur."""
     collection_name = query_details["collection"]
     if not collection_name:
-        return None, "Kategori bulunamadı"
+        return None, "Lütfen sorgunuzda bir ürün kategorisi belirtin."
     try:
         collection = client.get_collection(name=collection_name)
         n_results = 50 if query_details['search_type'] != 'default' else 20
@@ -163,7 +197,7 @@ def get_best_product_match(client, query_details):
             where=query_details["where_filter"] if query_details["where_filter"] else None
         )
         if not results or not results.get('metadatas') or not results['metadatas'][0]:
-            return None, "Bu kriterlere uygun ürün bulunamadı"
+            return None, "Bu kriterlere uygun ürün bulunamadı."
 
         candidates = results['metadatas'][0]
         search_type = query_details['search_type']
@@ -173,6 +207,8 @@ def get_best_product_match(client, query_details):
             max_score = -1
             for product in candidates:
                 price = product.get('min_price', 0)
+                # F/P skoru için özellik metninin uzunluğunu kullanmak basit bir yöntemdir.
+                # Gelecekte daha gelişmiş bir skorlama (örn: önemli özelliklere ağırlık verme) kullanılabilir.
                 feature_length = len(product.get('features', ''))
                 if price > 0:
                     score = feature_length / price
@@ -187,9 +223,12 @@ def get_best_product_match(client, query_details):
             sorted_products = sorted(valid_price_products, key=lambda p: p['min_price'], reverse=is_reverse)
             return sorted_products[0], "Başarılı"
         else:
+            # 'default' arama tipi için en yakın embedding sonucunu döndür
             return candidates[0], "Başarılı"
     except Exception as e:
-        return None, f"Arama hatası: {e}"
+        print(f"HATA: Ürün arama sırasında bir sorun oluştu: {e}")
+        # Kullanıcıya teknik detay vermeden genel bir hata mesajı döndür
+        return None, "Arama sırasında beklenmedik bir sorun oluştu."
 
 
 def generate_final_prompt(user_question, product_context):
@@ -197,17 +236,26 @@ def generate_final_prompt(user_question, product_context):
     urun_adi = product_context.get('product_name', 'N/A')
     urun_linki = product_context.get('product_url', 'N/A')
     urun_ozellikleri = product_context.get('features', 'Mevcut değil.')
-    offers = json.loads(product_context.get('offers_json', '[]'))
+    # offers_json string'ini güvenli bir şekilde parse et
+    try:
+        offers = json.loads(product_context.get('offers_json', '[]'))
+    except json.JSONDecodeError:
+        offers = []
+
     satici_bilgisi_listesi = []
     satici_linki = urun_linki
     if offers:
-        valid_offers = [o for o in offers if o.get('price', 0) > 0]
+        valid_offers = [o for o in offers if o.get('price') is not None and o.get('price') > 0]
         if valid_offers:
+            # En ucuz teklifin linkini al
             satici_linki = min(valid_offers, key=lambda x: x['price'])['offer_url']
+        # Teklifleri fiyata göre sırala
         for offer in sorted(valid_offers, key=lambda x: x.get('price', float('inf'))):
             satici_bilgisi_listesi.append(
                 f"- {offer.get('seller_name', 'N/A')}: {offer.get('price', 'N/A')} TL ({offer.get('stock_status', 'N/A')})")
+
     satici_bilgisi = "\n".join(satici_bilgisi_listesi) if satici_bilgisi_listesi else "Satıcı bilgisi bulunamadı."
+
     prompt = f"""
 Sen, müşteri memnuniyetini ve satışı en üst düzeye çıkarmayı hedefleyen, son derece bilgili, ikna edici ve yardımcı bir "Akıllı Satış Asistanı"sın.
 ### SAĞLANAN BİLGİLER (RAG) ###
@@ -239,8 +287,8 @@ def chat_handler():
     query_details = extract_query_details(user_question, ALL_CATEGORIES)
 
     if not query_details["collection"]:
-        sample_categories = random.sample(ALL_CATEGORIES, min(5, len(ALL_CATEGORIES))) if ALL_CATEGORIES else [
-            "Örnek Kategori"]
+        # Rastgele 5 kategori öner
+        sample_categories = random.sample(ALL_CATEGORIES, min(5, len(ALL_CATEGORIES))) if ALL_CATEGORIES else ["Örnek Kategori"]
         kategori_onerisi = f"Sorgunuzda bir kategori belirtmediniz veya anlayamadım. Lütfen sorgunuza bir kategori ekleyin. Örnekler: {', '.join(sample_categories)}"
         return jsonify({"answer": kategori_onerisi, "product_context": None})
 
