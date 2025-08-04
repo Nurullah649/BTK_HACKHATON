@@ -73,15 +73,13 @@ def initialize_services():
 
 def convert_words_to_numbers(text):
     """Sorgu metnindeki 'bin', 'milyon' gibi sayısal ifadeleri rakamlara çevirir."""
-    text = text.lower()
-    # Örnek: "50 bin", "100k", "1.5 milyon" gibi ifadeleri dönüştürür
-    # Not: Bu fonksiyon temel durumları kapsar, çok karmaşık metinler için daha gelişmiş bir yapı gerekebilir.
-    text = re.sub(r'(\d[\d\.,]*)\s*(?:bin|k)\b', lambda m: str(int(parse_turkish_price(m.group(1)) * 1000)), text)
-    text = re.sub(r'(\d[\d\.,]*)\s*milyon\b', lambda m: str(int(parse_turkish_price(m.group(1)) * 1000000)), text)
-    # Tek başına kullanılan ifadeler
-    text = re.sub(r'\byüz\s+bin\b', '100000', text)
-    text = re.sub(r'\bbir\s+milyon\b', '1000000', text)
-    text = re.sub(r'\bbin\b', '1000', text)
+    # Not: Bu fonksiyon çağrılmadan önce metin küçük harfe çevrilmemelidir.
+    # Regex işlemleri burada case-insensitive olarak yapılabilir.
+    text = re.sub(r'(\d[\d\.,]*)\s*(?:bin|k)\b', lambda m: str(int(parse_turkish_price(m.group(1)) * 1000)), text, flags=re.IGNORECASE)
+    text = re.sub(r'(\d[\d\.,]*)\s*milyon\b', lambda m: str(int(parse_turkish_price(m.group(1)) * 1000000)), text, flags=re.IGNORECASE)
+    text = re.sub(r'\byüz\s+bin\b', '100000', text, flags=re.IGNORECASE)
+    text = re.sub(r'\bbir\s+milyon\b', '1000000', text, flags=re.IGNORECASE)
+    text = re.sub(r'\bbin\b', '1000', text, flags=re.IGNORECASE)
     return text
 
 def parse_turkish_price(price_str):
@@ -110,49 +108,55 @@ def extract_query_details(query_text, all_categories_list):
     processed_query = convert_words_to_numbers(query_text)
     print(f"Sayısal ifadeler işlendi: '{processed_query}'")
 
-    lower_query = processed_query.lower()
     target_collection = None
     found_category = None
     search_text = processed_query # Varsayılan olarak işlenmiş sorguyu kullan
 
-    # 2. Adım: Kategori tespiti (En uzundan kısaya doğru ve kelime sınırlarına dikkat ederek)
+    # 2. Adım: Kategori tespiti (En uzundan kısaya doğru, case-insensitive)
     for category in all_categories_list:
-        # \b ile kelime sınırı kontrolü, "RAM" gibi kısa isimlerin "Kamera" gibi
-        # kelimelerin içinde hatalı eşleşmesini önler.
-        if re.search(r'\b' + re.escape(category.lower()) + r'\b', lower_query):
+        # \b ile kelime sınırı kontrolü yapılır.
+        # re.IGNORECASE kullanarak büyük/küçük harf duyarsız ve Türkçe karakterlere
+        # duyarlı bir arama yapılır. Bu, .lower() kullanmaktan daha güvenilirdir.
+        pattern = r'\b' + re.escape(category) + r'\b'
+        if re.search(pattern, processed_query, re.IGNORECASE):
             found_category = category
             target_collection = sanitize_collection_name(found_category)
             print(f"Kategori bulundu: '{found_category}' -> Koleksiyon: '{target_collection}'")
 
             # Kategori adını sorgudan temizle
-            cleaned_query = re.sub(r'\b' + re.escape(found_category) + r'(\w*)?\b', '', processed_query,
-                                   flags=re.IGNORECASE).strip()
+            cleaned_query = re.sub(pattern, '', processed_query, flags=re.IGNORECASE).strip()
+            # Oluşabilecek çoklu boşlukları tek boşluğa indirge
+            cleaned_query = re.sub(r'\s+', ' ', cleaned_query).strip()
 
-            # Eğer temizleme sonrası sorgu boş değilse onu kullan
+            # Eğer temizleme sonrası sorguda anlamlı bir metin kaldıysa onu kullan.
+            # Yoksa (örn: kullanıcı sadece "Aspiratör" dediyse), arama metni olarak
+            # kategori adının kendisini kullan. Bu, embedding'in boş metinle hata vermesini önler.
             if cleaned_query:
                 search_text = cleaned_query
                 print(f"Sorgu temizlendi. Yeni arama metni: '{search_text}'")
             else:
-                print("Temizlenmiş sorgu boş, orijinal metin kullanılıyor.")
+                search_text = found_category
+                print(f"Temizlenmiş sorgu boş. Arama metni olarak kategori adı kullanılıyor: '{search_text}'")
             break
 
     if not target_collection:
-        print(f"UYARI: Sorgu '{query_text}' içinde bilinen bir kategori bulunamadı.")
+        print(f"UYARI: Sorgu '{processed_query}' içinde bilinen bir kategori bulunamadı.")
 
     # 3. Adım: Arama tipini belirle
     search_type = 'default'
-    if 'fiyat performans' in lower_query or 'f/p' in lower_query:
+    lower_processed_query = processed_query.lower() # Arama tipi için küçük harf kullan
+    if 'fiyat performans' in lower_processed_query or 'f/p' in lower_processed_query:
         search_type = 'price_performance'
-    elif 'en ucuz' in lower_query:
+    elif 'en ucuz' in lower_processed_query:
         search_type = 'cheapest'
-    elif 'en pahalı' in lower_query:
+    elif 'en pahalı' in lower_processed_query:
         search_type = 'most_expensive'
 
     # 4. Adım: Fiyat aralığını ve filtreleri çıkar (Geliştirilmiş parser ile)
     where_filter = {}
     try:
         # Sadece sayısal karakterleri ve ayraçları içeren kısımları bul
-        prices_str = re.findall(r'(\d[\d\.,]*)', search_text)
+        prices_str = re.findall(r'(\d[\d\.,]*)', processed_query)
         prices = sorted([p for p in (parse_turkish_price(s) for s in prices_str) if p > 0])
         if len(prices) >= 2:
             where_filter = {"$and": [{"min_price": {"$gte": prices[0]}}, {"min_price": {"$lte": prices[1]}}]}
@@ -207,8 +211,6 @@ def get_best_product_match(client, query_details):
             max_score = -1
             for product in candidates:
                 price = product.get('min_price', 0)
-                # F/P skoru için özellik metninin uzunluğunu kullanmak basit bir yöntemdir.
-                # Gelecekte daha gelişmiş bir skorlama (örn: önemli özelliklere ağırlık verme) kullanılabilir.
                 feature_length = len(product.get('features', ''))
                 if price > 0:
                     score = feature_length / price
@@ -223,11 +225,9 @@ def get_best_product_match(client, query_details):
             sorted_products = sorted(valid_price_products, key=lambda p: p['min_price'], reverse=is_reverse)
             return sorted_products[0], "Başarılı"
         else:
-            # 'default' arama tipi için en yakın embedding sonucunu döndür
             return candidates[0], "Başarılı"
     except Exception as e:
         print(f"HATA: Ürün arama sırasında bir sorun oluştu: {e}")
-        # Kullanıcıya teknik detay vermeden genel bir hata mesajı döndür
         return None, "Arama sırasında beklenmedik bir sorun oluştu."
 
 
@@ -236,7 +236,6 @@ def generate_final_prompt(user_question, product_context):
     urun_adi = product_context.get('product_name', 'N/A')
     urun_linki = product_context.get('product_url', 'N/A')
     urun_ozellikleri = product_context.get('features', 'Mevcut değil.')
-    # offers_json string'ini güvenli bir şekilde parse et
     try:
         offers = json.loads(product_context.get('offers_json', '[]'))
     except json.JSONDecodeError:
@@ -247,9 +246,7 @@ def generate_final_prompt(user_question, product_context):
     if offers:
         valid_offers = [o for o in offers if o.get('price') is not None and o.get('price') > 0]
         if valid_offers:
-            # En ucuz teklifin linkini al
             satici_linki = min(valid_offers, key=lambda x: x['price'])['offer_url']
-        # Teklifleri fiyata göre sırala
         for offer in sorted(valid_offers, key=lambda x: x.get('price', float('inf'))):
             satici_bilgisi_listesi.append(
                 f"- {offer.get('seller_name', 'N/A')}: {offer.get('price', 'N/A')} TL ({offer.get('stock_status', 'N/A')})")
@@ -287,7 +284,6 @@ def chat_handler():
     query_details = extract_query_details(user_question, ALL_CATEGORIES)
 
     if not query_details["collection"]:
-        # Rastgele 5 kategori öner
         sample_categories = random.sample(ALL_CATEGORIES, min(5, len(ALL_CATEGORIES))) if ALL_CATEGORIES else ["Örnek Kategori"]
         kategori_onerisi = f"Sorgunuzda bir kategori belirtmediniz veya anlayamadım. Lütfen sorgunuza bir kategori ekleyin. Örnekler: {', '.join(sample_categories)}"
         return jsonify({"answer": kategori_onerisi, "product_context": None})
@@ -312,5 +308,4 @@ def chat_handler():
 # --- UYGULAMAYI BAŞLATMA ---
 if __name__ == "__main__":
     initialize_services()
-    # Cloud Run'ın verdiği PORT çevre değişkenini kullanır.
     app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 8080)), debug=False)
