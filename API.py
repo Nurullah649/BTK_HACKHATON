@@ -50,14 +50,33 @@ ALL_CATEGORIES = []
 # --- YARDIMCI FONKSİYONLAR ---
 
 def sanitize_collection_name(name):
-    """Kategori adını veritabanı koleksiyon adı formatına çevirir."""
-    # Boşlukları alt çizgi ile değiştirir.
-    name = re.sub(r'\s+', '_', name)
-    # Geçersiz olabilecek karakterleri temizler.
-    # KULLANICI İSTEĞİ ÜZERİNE: .lower() kaldırıldı.
-    # Bu, koleksiyon adlarının orijinal büyük/küçük harf ile oluşturulduğu varsayımını temel alır.
-    name = re.sub(r'[^\w-]', '', name)
-    return name
+    """
+    Kategori adını, veritabanını oluşturan kod ile %100 uyumlu olacak şekilde
+    ChromaDB için geçerli bir koleksiyon adına dönüştürür.
+    """
+    if not name:
+        return "diger_kategoriler"
+    # Türkçe karakterleri Latin karakterlere çevir
+    char_map = {
+        'ı': 'i', 'ğ': 'g', 'ü': 'u', 'ş': 's', 'ö': 'o', 'ç': 'c',
+        'İ': 'i', 'Ğ': 'g', 'Ü': 'u', 'Ş': 's', 'Ö': 'o', 'Ç': 'c'
+    }
+    for tr_char, en_char in char_map.items():
+        name = name.replace(tr_char, en_char)
+
+    name = name.lower()
+    # Boşlukları ve tireleri alt çizgiye dönüştür
+    name = name.replace(' ', '_').replace('-', '_')
+    # Geçersiz karakterleri kaldır
+    name = re.sub(r'[^a-z0-9_]', '', name)
+    # Başta veya sonda alt çizgi olmamasını sağla
+    name = name.strip('_')
+    # ChromaDB'nin kurallarına uyum sağla
+    if len(name) < 3:
+        name = f"{name}_koleksiyonu"
+    if len(name) > 63:
+        name = name[:63]
+    return name if name else "diger_kategoriler"
 
 
 def initialize_services():
