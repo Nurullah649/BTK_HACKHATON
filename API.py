@@ -40,6 +40,8 @@ try:
     from VeriTabanı import sanitize_collection_name
 except ImportError:
     print("UYARI: VeriTabanı.py dosyası bulunamadı. Standart fonksiyon kullanılacak.")
+
+
     def sanitize_collection_name(name):
         return re.sub(r'\s+', '_', name.lower())
 
@@ -69,31 +71,31 @@ def initialize_services():
         print(f"HATA: Servisler başlatılamadı: {e}")
         sys.exit(1)
 
-# --- YENİ EKLENEN YARDIMCI FONKSİYONLAR ---
+
+# --- YARDIMCI FONKSİYONLAR ---
 
 def convert_words_to_numbers(text):
     """Sorgu metnindeki 'bin', 'milyon' gibi sayısal ifadeleri rakamlara çevirir."""
-    # Not: Bu fonksiyon çağrılmadan önce metin küçük harfe çevrilmemelidir.
-    # Regex işlemleri burada case-insensitive olarak yapılabilir.
-    text = re.sub(r'(\d[\d\.,]*)\s*(?:bin|k)\b', lambda m: str(int(parse_turkish_price(m.group(1)) * 1000)), text, flags=re.IGNORECASE)
-    text = re.sub(r'(\d[\d\.,]*)\s*milyon\b', lambda m: str(int(parse_turkish_price(m.group(1)) * 1000000)), text, flags=re.IGNORECASE)
+    text = re.sub(r'(\d[\d\.,]*)\s*(?:bin|k)\b', lambda m: str(int(parse_turkish_price(m.group(1)) * 1000)), text,
+                  flags=re.IGNORECASE)
+    text = re.sub(r'(\d[\d\.,]*)\s*milyon\b', lambda m: str(int(parse_turkish_price(m.group(1)) * 1000000)), text,
+                  flags=re.IGNORECASE)
     text = re.sub(r'\byüz\s+bin\b', '100000', text, flags=re.IGNORECASE)
     text = re.sub(r'\bbir\s+milyon\b', '1000000', text, flags=re.IGNORECASE)
     text = re.sub(r'\bbin\b', '1000', text, flags=re.IGNORECASE)
     return text
+
 
 def parse_turkish_price(price_str):
     """Türkçe fiyat formatını (örn: "1.234,56") float sayıya çevirir."""
     if not isinstance(price_str, str):
         return float(price_str)
     try:
-        # Binlik ayırıcı olan noktaları kaldır
-        cleaned_str = price_str.replace('.', '')
-        # Ondalık ayırıcı olan virgülü noktaya çevir
-        cleaned_str = cleaned_str.replace(',', '.')
+        cleaned_str = price_str.replace('.', '').replace(',', '.')
         return float(cleaned_str)
     except (ValueError, TypeError):
-        return 0.0 # Hata durumunda 0 döndür
+        return 0.0
+
 
 # --- GÜNCELLENEN FONKSİYONLAR ---
 
@@ -104,33 +106,30 @@ def extract_query_details(query_text, all_categories_list):
     """
     print(f"Sorgu analizi başlatıldı: '{query_text}'")
 
-    # 1. Adım: Sorgudaki "bin", "milyon" gibi ifadeleri sayılara çevir
     processed_query = convert_words_to_numbers(query_text)
     print(f"Sayısal ifadeler işlendi: '{processed_query}'")
 
     target_collection = None
     found_category = None
-    search_text = processed_query # Varsayılan olarak işlenmiş sorguyu kullan
+    search_text = processed_query
 
-    # 2. Adım: Kategori tespiti (En uzundan kısaya doğru, case-insensitive)
+    # Kategori tespiti için daha sağlam bir regex yapısı kullanılıyor.
     for category in all_categories_list:
-        # \b ile kelime sınırı kontrolü yapılır.
-        # re.IGNORECASE kullanarak büyük/küçük harf duyarsız ve Türkçe karakterlere
-        # duyarlı bir arama yapılır. Bu, .lower() kullanmaktan daha güvenilirdir.
-        pattern = r'\b' + re.escape(category) + r'\b'
-        if re.search(pattern, processed_query, re.IGNORECASE):
+        # DÜZELTME: \b yerine (?<!\w) ve (?!\w) kullanılarak daha güvenilir bir
+        # kelime sınırı kontrolü yapılır. Bu, farklı sistemlerdeki Türkçe karakter
+        # uyumsuzluklarını çözer.
+        pattern = r'(?<!\w)' + re.escape(category) + r'(?!\w)'
+
+        match = re.search(pattern, processed_query, re.IGNORECASE)
+        if match:
             found_category = category
             target_collection = sanitize_collection_name(found_category)
             print(f"Kategori bulundu: '{found_category}' -> Koleksiyon: '{target_collection}'")
 
             # Kategori adını sorgudan temizle
-            cleaned_query = re.sub(pattern, '', processed_query, flags=re.IGNORECASE).strip()
-            # Oluşabilecek çoklu boşlukları tek boşluğa indirge
+            cleaned_query = re.sub(pattern, '', processed_query, count=1, flags=re.IGNORECASE).strip()
             cleaned_query = re.sub(r'\s+', ' ', cleaned_query).strip()
 
-            # Eğer temizleme sonrası sorguda anlamlı bir metin kaldıysa onu kullan.
-            # Yoksa (örn: kullanıcı sadece "Aspiratör" dediyse), arama metni olarak
-            # kategori adının kendisini kullan. Bu, embedding'in boş metinle hata vermesini önler.
             if cleaned_query:
                 search_text = cleaned_query
                 print(f"Sorgu temizlendi. Yeni arama metni: '{search_text}'")
@@ -142,9 +141,8 @@ def extract_query_details(query_text, all_categories_list):
     if not target_collection:
         print(f"UYARI: Sorgu '{processed_query}' içinde bilinen bir kategori bulunamadı.")
 
-    # 3. Adım: Arama tipini belirle
     search_type = 'default'
-    lower_processed_query = processed_query.lower() # Arama tipi için küçük harf kullan
+    lower_processed_query = processed_query.lower()
     if 'fiyat performans' in lower_processed_query or 'f/p' in lower_processed_query:
         search_type = 'price_performance'
     elif 'en ucuz' in lower_processed_query:
@@ -152,23 +150,20 @@ def extract_query_details(query_text, all_categories_list):
     elif 'en pahalı' in lower_processed_query:
         search_type = 'most_expensive'
 
-    # 4. Adım: Fiyat aralığını ve filtreleri çıkar (Geliştirilmiş parser ile)
     where_filter = {}
     try:
-        # Sadece sayısal karakterleri ve ayraçları içeren kısımları bul
         prices_str = re.findall(r'(\d[\d\.,]*)', processed_query)
         prices = sorted([p for p in (parse_turkish_price(s) for s in prices_str) if p > 0])
         if len(prices) >= 2:
             where_filter = {"$and": [{"min_price": {"$gte": prices[0]}}, {"min_price": {"$lte": prices[1]}}]}
         elif len(prices) == 1:
             price_val = prices[0]
-            # Fiyat etrafında %20'lik bir aralık belirle
-            where_filter = {"$and": [{"min_price": {"$gte": price_val * 0.8}}, {"min_price": {"$lte": price_val * 1.2}}]}
+            where_filter = {
+                "$and": [{"min_price": {"$gte": price_val * 0.8}}, {"min_price": {"$lte": price_val * 1.2}}]}
         if where_filter:
-             print(f"Fiyat filtresi oluşturuldu: {where_filter}")
+            print(f"Fiyat filtresi oluşturuldu: {where_filter}")
     except Exception as e:
         print(f"Fiyat filtresi oluşturulurken hata: {e}")
-
 
     return {
         "collection": target_collection,
@@ -284,7 +279,8 @@ def chat_handler():
     query_details = extract_query_details(user_question, ALL_CATEGORIES)
 
     if not query_details["collection"]:
-        sample_categories = random.sample(ALL_CATEGORIES, min(5, len(ALL_CATEGORIES))) if ALL_CATEGORIES else ["Örnek Kategori"]
+        sample_categories = random.sample(ALL_CATEGORIES, min(5, len(ALL_CATEGORIES))) if ALL_CATEGORIES else [
+            "Örnek Kategori"]
         kategori_onerisi = f"Sorgunuzda bir kategori belirtmediniz veya anlayamadım. Lütfen sorgunuza bir kategori ekleyin. Örnekler: {', '.join(sample_categories)}"
         return jsonify({"answer": kategori_onerisi, "product_context": None})
 
