@@ -51,10 +51,12 @@ ALL_CATEGORIES = []
 
 def sanitize_collection_name(name):
     """Kategori adını veritabanı koleksiyon adı formatına çevirir."""
-    # Boşlukları alt çizgi ile değiştirir ve küçük harfe çevirir.
+    # Boşlukları alt çizgi ile değiştirir.
     name = re.sub(r'\s+', '_', name)
-    # Türkçe karakterleri ve geçersiz olabilecek diğer karakterleri temizler.
-    name = re.sub(r'[^\w-]', '', name.lower())
+    # Geçersiz olabilecek karakterleri temizler.
+    # KULLANICI İSTEĞİ ÜZERİNE: .lower() kaldırıldı.
+    # Bu, koleksiyon adlarının orijinal büyük/küçük harf ile oluşturulduğu varsayımını temel alır.
+    name = re.sub(r'[^\w-]', '', name)
     return name
 
 
