@@ -96,13 +96,11 @@ def initialize_services():
         with open(CATEGORIES_FILENAME, 'r', encoding='utf-8') as f:
             categories_list = json.load(f)
             # Doğru eşleşme için en uzun kategori adından başlayarak sırala.
-            # Bu, "Ekran Kartı" gibi bir ifadenin "Kart" olarak yanlış eşleşmesini önler.
             ALL_CATEGORIES = sorted(categories_list, key=len, reverse=True)
 
         print("✅ Servisler başarıyla başlatıldı.")
         print(f"Veritabanı yolu: {DB_PATH}")
         print(f"{len(ALL_CATEGORIES)} kategori yüklendi.")
-        # EKLENEN SATIR: Yüklenen kategori listesini loglarda göster.
         print(f"--- YÜKLENEN KATEGORİ LİSTESİ ---\n{ALL_CATEGORIES}\n---------------------------------")
 
 
@@ -119,7 +117,6 @@ def parse_turkish_price(price_str):
     if not isinstance(price_str, str):
         return float(price_str)
     try:
-        # Binlik ayırıcıyı kaldırır, ondalık ayırıcıyı noktaya çevirir.
         cleaned_str = price_str.replace('.', '').replace(',', '.')
         return float(cleaned_str)
     except (ValueError, TypeError):
@@ -128,18 +125,12 @@ def parse_turkish_price(price_str):
 
 def convert_words_to_numbers(text):
     """Sorgu metnindeki 'bin', 'milyon' gibi sayısal ifadeleri rakamlara çevirir."""
-    # Bu fonksiyon parse_turkish_price fonksiyonuna bağımlıdır.
-    # Örnek: "1.5 bin" -> "1500"
     text = re.sub(r'(\d[\d\.,]*)\s*(?:bin|k)\b', lambda m: str(int(parse_turkish_price(m.group(1)) * 1000)), text,
                   flags=re.IGNORECASE)
-    # Örnek: "2 milyon" -> "2000000"
     text = re.sub(r'(\d[\d\.,]*)\s*milyon\b', lambda m: str(int(parse_turkish_price(m.group(1)) * 1000000)), text,
                   flags=re.IGNORECASE)
-    # Örnek: "yüz bin" -> "100000"
     text = re.sub(r'\byüz\s+bin\b', '100000', text, flags=re.IGNORECASE)
-    # Örnek: "bir milyon" -> "1000000"
     text = re.sub(r'\bbir\s+milyon\b', '1000000', text, flags=re.IGNORECASE)
-    # Örnek: "bin" -> "1000"
     text = re.sub(r'\bbin\b', '1000', text, flags=re.IGNORECASE)
     return text
 
@@ -148,33 +139,31 @@ def extract_query_details(query_text):
     """Kullanıcı sorgusunu analiz ederek kategoriyi, arama metnini ve filtreleri çıkarır."""
     print(f"Orijinal sorgu: '{query_text}'")
 
-    # 1. ADIM: Metinsel fiyat ifadelerini sayısal değerlere dönüştür.
     processed_query = convert_words_to_numbers(query_text)
     print(f"Fiyat dönüşümü sonrası sorgu: '{processed_query}'")
 
     lower_query = processed_query.lower()
 
-    # 2. ADIM: Kategori Tespiti
+    # Kategori Tespiti
     target_collection = None
     found_category = None
-    search_text = lower_query  # Varsayılan olarak tüm sorguyu arama metni yap
+
+    # DÜZELTME: Arama metni, eski çalışan koddaki gibi sorgunun tamamı olarak ayarlandı.
+    search_text = processed_query
 
     for category in ALL_CATEGORIES:
-        # DÜZELTME: .strip() eklenerek JSON dosyasındaki olası boşluk hataları giderildi.
         category_lower = category.strip().lower()
         if category_lower in lower_query:
             found_category = category
             target_collection = sanitize_collection_name(found_category)
             print(f"Kategori bulundu: '{found_category}' -> Koleksiyon: '{target_collection}'")
-            search_text = lower_query.replace(category_lower, '', 1).strip()
-            if not search_text:
-                search_text = category_lower
+            # Arama metnini artık değiştirmiyoruz, sorgunun tamamını kullanıyoruz.
             break
 
     if not target_collection:
         print(f"UYARI: Sorgu '{processed_query}' içinde bilinen bir kategori bulunamadı.")
 
-    # 3. ADIM: Arama Tipi Tespiti
+    # Arama Tipi Tespiti
     search_type = SEARCH_TYPE_DEFAULT
     if 'fiyat performans' in lower_query or 'f/p' in lower_query:
         search_type = SEARCH_TYPE_FP
@@ -184,7 +173,7 @@ def extract_query_details(query_text):
         search_type = SEARCH_TYPE_EXPENSIVE
     print(f"Arama tipi belirlendi: '{search_type}'")
 
-    # 4. ADIM: Fiyat Filtresi Tespiti (Dönüştürülmüş sorgu üzerinden)
+    # Fiyat Filtresi Tespiti
     where_filter = {}
     try:
         prices_str = re.findall(r'(\d[\d\.,]*)', processed_query)
@@ -235,7 +224,7 @@ def get_best_product_match(client, query_details):
         query_embedding = result['embedding']
 
         results = collection.query(
-            query_embeddings=[query_embedding],  # Embedding bir liste içinde olmalı
+            query_embeddings=[query_embedding],
             n_results=n_results,
             where=query_details["where_filter"] if query_details["where_filter"] else None
         )
@@ -285,7 +274,7 @@ def generate_final_prompt(user_question, product_context):
         offers = []
 
     satici_bilgisi_listesi = []
-    en_ucuz_satici_linki = urun_linki  # Varsayılan link
+    en_ucuz_satici_linki = urun_linki
 
     valid_offers = sorted(
         [o for o in offers if o.get('price') is not None and o.get('price') > 0],
@@ -363,12 +352,8 @@ def chat_handler():
 
 
 # --- UYGULAMAYI BAŞLATMA ---
-# DÜZELTME: Bu fonksiyon çağrısı, Gunicorn'un dosyayı import etmesiyle
-# çalışması için if bloğunun dışına taşındı.
 initialize_services()
 
 if __name__ == "__main__":
-    # Bu blok sadece dosyayı doğrudan `python app.py` ile çalıştırdığınızda
-    # (yerel geliştirme için) kullanılır.
     print(">>> __main__ bloğu çalıştırılıyor (YEREL GELİŞTİRME).")
     app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 8080)), debug=True)
