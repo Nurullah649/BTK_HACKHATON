@@ -13,7 +13,7 @@ from flask_cors import CORS
 # --- SABİTLER VE YAPILANDIRMA ---
 # Bu sabitler, kod içinde tekrar eden metinleri ve sayıları merkezi bir yerden yönetmeyi sağlar.
 # Bu sayede hem okunabilirlik artar hem de gelecekteki değişiklikler kolaylaşır.
-API_KEY="""AIzaSyAnI7dxlH0isxzqwqX-qkajlg2UC4zIssU"""  # UYARI: Güvenli bir yöntem değildir. Ortam değişkeni tercih edilmelidir.
+API_KEY="""AIzaSyAnI7dxlH0isxzqwqX-qkajlg2UC4zIssU""" # UYARI: Güvenli bir yöntem değildir. Ortam değişkeni tercih edilmelidir.
 GENERATION_MODEL = "gemini-2.5-pro"
 EMBEDDING_MODEL = "models/text-embedding-004"
 DB_PATH = "urun_veritabani"
@@ -75,6 +75,9 @@ def initialize_services():
         print("✅ Servisler başarıyla başlatıldı.")
         print(f"Veritabanı yolu: {DB_PATH}")
         print(f"{len(ALL_CATEGORIES)} kategori yüklendi.")
+        # EKLENEN SATIR: Yüklenen kategori listesini loglarda göster.
+        print(f"--- YÜKLENEN KATEGORİ LİSTESİ ---\n{ALL_CATEGORIES}\n---------------------------------")
+
 
     except FileNotFoundError:
         print(f"HATA: '{CATEGORIES_FILENAME}' dosyası bulunamadı. Lütfen dosyanın doğru yolda olduğundan emin olun.")
@@ -130,7 +133,8 @@ def extract_query_details(query_text):
     search_text = lower_query  # Varsayılan olarak tüm sorguyu arama metni yap
 
     for category in ALL_CATEGORIES:
-        category_lower = category.lower()
+        # DÜZELTME: .strip() eklenerek JSON dosyasındaki olası boşluk hataları giderildi.
+        category_lower = category.strip().lower()
         if category_lower in lower_query:
             found_category = category
             target_collection = sanitize_collection_name(found_category)
