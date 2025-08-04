@@ -4,3 +4,4 @@ gunicorn
 google-generativeai
 python-dotenv
 chromadb
+google-cloud-storage
