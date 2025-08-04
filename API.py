@@ -342,9 +342,9 @@ def chat_handler():
 
 
 # --- UYGULAMAYI BAŞLATMA ---
-if __name__ == "__main__":
-    print(">>> __main__ bloğu çalıştırılıyor.")  # Yeni test satırı
-    initialize_services()
-    # Gunicorn gibi bir WSGI sunucusu ile production'da çalıştırılması önerilir.
-    # debug=False production için önemlidir.
-    app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 8080)), debug=False)
+
+print(">>> __main__ bloğu çalıştırılıyor.")  # Yeni test satırı
+initialize_services()
+# Gunicorn gibi bir WSGI sunucusu ile production'da çalıştırılması önerilir.
+# debug=False production için önemlidir.
+app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 8080)), debug=False)
