@@ -24,6 +24,9 @@ GENERATION_MODEL = "gemini-2.5-pro"
 EMBEDDING_MODEL = "models/text-embedding-004"
 CATEGORIES_FILENAME = "kategoriler.json"
 
+# DÜZELTME: Bucket adı doğrudan koda eklendi.
+GCS_BUCKET_NAME = "rag-api-veritabani"
+
 # Veritabanının Cloud Run içinde indirileceği geçici konum
 DB_PATH = "/tmp/urun_veritabani"
 # Veritabanının Cloud Storage'daki klasör adı
@@ -56,11 +59,7 @@ ALL_CATEGORIES = []
 
 def download_database_from_gcs():
     """Veritabanı dosyalarını Google Cloud Storage'dan indirir."""
-    bucket_name = "rag-api-veritabani"
-    if not bucket_name:
-        print("HATA: GCS_BUCKET_NAME ortam değişkeni ayarlanmamış. Veritabanı indirilemiyor.")
-        return False
-
+    bucket_name = GCS_BUCKET_NAME
     print(f"'{bucket_name}' bucket'ından veritabanı indirilmeye başlanıyor...")
 
     # Eğer hedef klasör varsa, temizle
@@ -225,8 +224,15 @@ def get_best_product_match(client, query_details):
         result = genai.embed_content(model=EMBEDDING_MODEL, content=[query_details["search_text"]],
                                      task_type="RETRIEVAL_QUERY")
         query_embedding = result['embedding']
-        results = collection.query(query_embeddings=[query_embedding], n_results=n_results,
-                                   where=query_details["where_filter"] if query_details["where_filter"] else None)
+
+        # DÜZELTME: ChromaDB'ye gönderilen embedding formatı düzeltildi.
+        # Fazladan liste parantezleri kaldırıldı.
+        results = collection.query(
+            query_embeddings=query_embedding,
+            n_results=n_results,
+            where=query_details["where_filter"] if query_details["where_filter"] else None
+        )
+
         if not results or not results.get('metadatas') or not results['metadatas'][0]:
             return None, "Bu kriterlere uygun ürün bulunamadı."
         candidates = results['metadatas'][0]
