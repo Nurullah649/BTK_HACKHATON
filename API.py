@@ -1,3 +1,8 @@
+# =================================================================
+# === UYGULAMA BAŞLANGIÇ TESTİ - BU MESAJI LOGLARDA GÖRMELİSİNİZ ===
+print(">>> KOD DOSYASI BAŞARIYLA ÇALIŞTIRILDI - VERSİYON KONTROLÜ <<<")
+# =================================================================
+
 import chromadb
 import google.generativeai as genai
 import os
@@ -13,7 +18,7 @@ from flask_cors import CORS
 # --- SABİTLER VE YAPILANDIRMA ---
 # Bu sabitler, kod içinde tekrar eden metinleri ve sayıları merkezi bir yerden yönetmeyi sağlar.
 # Bu sayede hem okunabilirlik artar hem de gelecekteki değişiklikler kolaylaşır.
-API_KEY="""AIzaSyAnI7dxlH0isxzqwqX-qkajlg2UC4zIssU""" # UYARI: Güvenli bir yöntem değildir. Ortam değişkeni tercih edilmelidir.
+API_KEY = "AIzaSyAnI7dxlH0isxzqwqX-qkajlg2UC4zIssU"  # UYARI: Güvenli bir yöntem değildir. Ortam değişkeni tercih edilmelidir.
 GENERATION_MODEL = "gemini-2.5-pro"
 EMBEDDING_MODEL = "models/text-embedding-004"
 DB_PATH = "urun_veritabani"
@@ -56,6 +61,7 @@ def sanitize_collection_name(name):
 def initialize_services():
     """API ve Veritabanı istemcilerini başlatır, kategorileri yükler."""
     global CLIENT, MODEL, ALL_CATEGORIES
+    print(">>> initialize_services fonksiyonu çağrıldı.")  # Yeni test satırı
     if not API_KEY:
         print("HATA: API_KEY bulunamadı. Lütfen API anahtarınızı tanımlayın.")
         sys.exit(1)
@@ -337,6 +343,7 @@ def chat_handler():
 
 # --- UYGULAMAYI BAŞLATMA ---
 if __name__ == "__main__":
+    print(">>> __main__ bloğu çalıştırılıyor.")  # Yeni test satırı
     initialize_services()
     # Gunicorn gibi bir WSGI sunucusu ile production'da çalıştırılması önerilir.
     # debug=False production için önemlidir.
