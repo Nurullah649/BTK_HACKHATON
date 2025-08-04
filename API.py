@@ -61,7 +61,7 @@ def sanitize_collection_name(name):
 def initialize_services():
     """API ve Veritabanı istemcilerini başlatır, kategorileri yükler."""
     global CLIENT, MODEL, ALL_CATEGORIES
-    print(">>> initialize_services fonksiyonu çağrıldı.")  # Yeni test satırı
+    print(">>> initialize_services fonksiyonu çağrıldı.")
     if not API_KEY:
         print("HATA: API_KEY bulunamadı. Lütfen API anahtarınızı tanımlayın.")
         sys.exit(1)
@@ -342,9 +342,12 @@ def chat_handler():
 
 
 # --- UYGULAMAYI BAŞLATMA ---
-
-print(">>> __main__ bloğu çalıştırılıyor.")  # Yeni test satırı
+# DÜZELTME: Bu fonksiyon çağrısı, Gunicorn'un dosyayı import etmesiyle
+# çalışması için if bloğunun dışına taşındı.
 initialize_services()
-# Gunicorn gibi bir WSGI sunucusu ile production'da çalıştırılması önerilir.
-# debug=False production için önemlidir.
-app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 8080)), debug=False)
+
+if __name__ == "__main__":
+    # Bu blok sadece dosyayı doğrudan `python app.py` ile çalıştırdığınızda
+    # (yerel geliştirme için) kullanılır.
+    print(">>> __main__ bloğu çalıştırılıyor (YEREL GELİŞTİRME).")
+    app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 8080)), debug=True)
