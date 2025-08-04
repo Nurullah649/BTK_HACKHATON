@@ -56,7 +56,7 @@ ALL_CATEGORIES = []
 
 def download_database_from_gcs():
     """Veritabanı dosyalarını Google Cloud Storage'dan indirir."""
-    bucket_name = os.environ.get('GCS_BUCKET_NAME')
+    bucket_name = "rag-api-veritabani"
     if not bucket_name:
         print("HATA: GCS_BUCKET_NAME ortam değişkeni ayarlanmamış. Veritabanı indirilemiyor.")
         return False
