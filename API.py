@@ -96,35 +96,54 @@ def parse_turkish_price(price_str):
         return 0.0
 
 
+def convert_words_to_numbers(text):
+    """Sorgu metnindeki 'bin', 'milyon' gibi sayısal ifadeleri rakamlara çevirir."""
+    # Bu fonksiyon parse_turkish_price fonksiyonuna bağımlıdır.
+    # Örnek: "1.5 bin" -> "1500"
+    text = re.sub(r'(\d[\d\.,]*)\s*(?:bin|k)\b', lambda m: str(int(parse_turkish_price(m.group(1)) * 1000)), text,
+                  flags=re.IGNORECASE)
+    # Örnek: "2 milyon" -> "2000000"
+    text = re.sub(r'(\d[\d\.,]*)\s*milyon\b', lambda m: str(int(parse_turkish_price(m.group(1)) * 1000000)), text,
+                  flags=re.IGNORECASE)
+    # Örnek: "yüz bin" -> "100000"
+    text = re.sub(r'\byüz\s+bin\b', '100000', text, flags=re.IGNORECASE)
+    # Örnek: "bir milyon" -> "1000000"
+    text = re.sub(r'\bbir\s+milyon\b', '1000000', text, flags=re.IGNORECASE)
+    # Örnek: "bin" -> "1000"
+    text = re.sub(r'\bbin\b', '1000', text, flags=re.IGNORECASE)
+    return text
+
+
 def extract_query_details(query_text):
     """Kullanıcı sorgusunu analiz ederek kategoriyi, arama metnini ve filtreleri çıkarır."""
-    print(f"Sorgu analizi başlatıldı: '{query_text}'")
-    lower_query = query_text.lower()
+    print(f"Orijinal sorgu: '{query_text}'")
 
-    # 1. Kategori Tespiti
+    # 1. ADIM: Metinsel fiyat ifadelerini sayısal değerlere dönüştür.
+    processed_query = convert_words_to_numbers(query_text)
+    print(f"Fiyat dönüşümü sonrası sorgu: '{processed_query}'")
+
+    lower_query = processed_query.lower()
+
+    # 2. ADIM: Kategori Tespiti
     target_collection = None
     found_category = None
     search_text = lower_query  # Varsayılan olarak tüm sorguyu arama metni yap
 
     for category in ALL_CATEGORIES:
-        # (?<!\w) ve (?!\w) kullanarak tam kelime eşleşmesi sağlanır.
-        # Bu, "kart" kelimesinin "ekran kartı" içinde eşleşmesini engeller.
-        pattern = r'(?<!\w)' + re.escape(category.lower()) + r'(?!\w)'
-        if re.search(pattern, lower_query):
+        category_lower = category.lower()
+        if category_lower in lower_query:
             found_category = category
             target_collection = sanitize_collection_name(found_category)
             print(f"Kategori bulundu: '{found_category}' -> Koleksiyon: '{target_collection}'")
-            # Kategori adı sorgudan temizlenerek asıl arama metni bulunur.
-            search_text = re.sub(pattern, '', lower_query, count=1, flags=re.IGNORECASE).strip()
-            # Eğer temizlik sonrası metin boş kalırsa, arama metni olarak kategori adının kendisi kullanılır.
+            search_text = lower_query.replace(category_lower, '', 1).strip()
             if not search_text:
-                search_text = found_category.lower()
-            break  # İlk ve en uzun eşleşme bulunduğunda döngüden çık
+                search_text = category_lower
+            break
 
     if not target_collection:
-        print(f"UYARI: Sorgu '{query_text}' içinde bilinen bir kategori bulunamadı.")
+        print(f"UYARI: Sorgu '{processed_query}' içinde bilinen bir kategori bulunamadı.")
 
-    # 2. Arama Tipi Tespiti
+    # 3. ADIM: Arama Tipi Tespiti
     search_type = SEARCH_TYPE_DEFAULT
     if 'fiyat performans' in lower_query or 'f/p' in lower_query:
         search_type = SEARCH_TYPE_FP
@@ -134,18 +153,15 @@ def extract_query_details(query_text):
         search_type = SEARCH_TYPE_EXPENSIVE
     print(f"Arama tipi belirlendi: '{search_type}'")
 
-    # 3. Fiyat Filtresi Tespiti
+    # 4. ADIM: Fiyat Filtresi Tespiti (Dönüştürülmüş sorgu üzerinden)
     where_filter = {}
     try:
-        # Sorgudaki tüm sayısal değerleri bul
-        prices_str = re.findall(r'(\d[\d\.,]*)', query_text)
-        # Sayıları parse et ve sırala
-        prices = sorted([p for p in (parse_turkish_price(s) for s in prices_str) if
-                         p > 10])  # Çok küçük sayıları (model no vb.) ele
+        prices_str = re.findall(r'(\d[\d\.,]*)', processed_query)
+        prices = sorted([p for p in (parse_turkish_price(s) for s in prices_str) if p > 10])
 
-        if len(prices) >= 2:  # İki fiyat varsa aralık olarak al
+        if len(prices) >= 2:
             where_filter = {"$and": [{"min_price": {"$gte": prices[0]}}, {"min_price": {"$lte": prices[1]}}]}
-        elif len(prices) == 1:  # Tek fiyat varsa etrafında bir aralık oluştur
+        elif len(prices) == 1:
             price_val = prices[0]
             lower_bound = price_val * (1 - PRICE_RANGE_MULTIPLIER)
             upper_bound = price_val * (1 + PRICE_RANGE_MULTIPLIER)
