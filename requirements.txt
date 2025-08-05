@@ -5,3 +5,4 @@ google-generativeai
 python-dotenv
 chromadb
 google-cloud-storage
+google-cloud-firestore
