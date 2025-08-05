@@ -15,7 +15,8 @@ import shutil
 from dotenv import load_dotenv
 from flask import Flask, request, jsonify
 from flask_cors import CORS
-# Firestore kütüphanesini import et
+# GCS ve Firestore kütüphanelerini import et
+from google.cloud import storage
 from google.cloud import firestore
 
 # --- SABİTLER VE YAPILANDIRMA ---
@@ -24,10 +25,13 @@ GENERATION_MODEL = "gemini-2.5-pro"
 EMBEDDING_MODEL = "models/text-embedding-004"
 CATEGORIES_FILENAME = "kategoriler.json"
 
-# Veritabanının GCS FUSE ile bağlandığı kaynak yol
-DB_SOURCE_PATH = "/gcs/urun_veritabani"
-# Veritabanının çalışacağı, sunucunun geçici hafızasındaki hedef yol
-DB_LOCAL_PATH = "/tmp/urun_veritabani"
+# GCS Bucket adı
+GCS_BUCKET_NAME = "rag-api-veritabani"
+
+# Veritabanının Cloud Run içinde indirileceği geçici konum
+DB_PATH = "/tmp/urun_veritabani"
+# Veritabanının Cloud Storage'daki klasör adı
+DB_SOURCE_FOLDER = "urun_veritabani"
 
 SEARCH_TYPE_DEFAULT = 'default'
 SEARCH_TYPE_FP = 'price_performance'
@@ -45,32 +49,40 @@ CORS(app)
 CLIENT = None
 MODEL = None
 ALL_CATEGORIES = []
-# Firestore veritabanı istemcisi için global değişken
 DB_FIRESTORE = None
 
 
 # --- YARDIMCI FONKSİYONLAR ---
 
-def copy_database_from_gcs_fuse():
-    """Veritabanını GCS FUSE mount noktasından yerel /tmp klasörüne kopyalar."""
-    print(f"Veritabanı '{DB_SOURCE_PATH}' konumundan '{DB_LOCAL_PATH}' konumuna kopyalanıyor...")
+def download_database_from_gcs():
+    """Veritabanı dosyalarını Google Cloud Storage'dan indirir."""
+    bucket_name = GCS_BUCKET_NAME
+    print(f"'{bucket_name}' bucket'ından veritabanı indirilmeye başlanıyor...")
 
-    # Hedef klasör varsa temizle
-    if os.path.exists(DB_LOCAL_PATH):
-        shutil.rmtree(DB_LOCAL_PATH)
+    if os.path.exists(DB_PATH):
+        shutil.rmtree(DB_PATH)
+    os.makedirs(DB_PATH)
 
     try:
-        # shutil.copytree ile tüm klasör içeriğini kopyala
-        shutil.copytree(DB_SOURCE_PATH, DB_LOCAL_PATH)
-        print("✅ Veritabanı başarıyla yerel hafızaya kopyalandı.")
+        storage_client = storage.Client()
+        bucket = storage_client.bucket(bucket_name)
+        blobs = bucket.list_blobs(prefix=DB_SOURCE_FOLDER)
+
+        file_count = 0
+        for blob in blobs:
+            if not blob.name.endswith('/'):
+                destination_file_name = os.path.join(DB_PATH, os.path.basename(blob.name))
+                blob.download_to_filename(destination_file_name)
+                file_count += 1
+
+        if file_count == 0:
+            print(f"UYARI: '{bucket_name}/{DB_SOURCE_FOLDER}' içinde indirilecek dosya bulunamadı.")
+            return False
+
+        print(f"✅ Veritabanı başarıyla indirildi. Toplam {file_count} dosya indirildi -> {DB_PATH}")
         return True
     except Exception as e:
-        print(f"HATA: Veritabanı kopyalanırken bir sorun oluştu: {e}")
-        # Hata durumunda kaynak klasörün içeriğini loglayarak hata ayıklamaya yardımcı ol
-        try:
-            print(f"Kaynak klasör içeriği ('{DB_SOURCE_PATH}'): {os.listdir(DB_SOURCE_PATH)}")
-        except Exception as list_e:
-            print(f"Kaynak klasör içeriği listelenemedi: {list_e}")
+        print(f"HATA: GCS'den veritabanı indirilirken bir sorun oluştu: {e}")
         return False
 
 
@@ -97,21 +109,20 @@ def initialize_services():
         print("HATA: API_KEY bulunamadı.");
         sys.exit(1)
     try:
-        # 1. ADIM: Veritabanını GCS FUSE'dan yerel diske kopyala
-        if not copy_database_from_gcs_fuse():
-            sys.exit("Veritabanı kopyalanamadığı için uygulama durduruluyor.")
+        # 1. ADIM: Veritabanını GCS'den indir
+        if not download_database_from_gcs():
+            sys.exit("Veritabanı indirilemediği için uygulama durduruluyor.")
 
         # 2. ADIM: Servisleri başlat
         genai.configure(api_key=API_KEY)
-        # ChromaDB istemcisi artık yerel kopyayı kullanıyor.
-        CLIENT = chromadb.PersistentClient(path=DB_LOCAL_PATH)
+        CLIENT = chromadb.PersistentClient(path=DB_PATH)
         MODEL = genai.GenerativeModel(GENERATION_MODEL)
         DB_FIRESTORE = firestore.Client()
         with open(CATEGORIES_FILENAME, 'r', encoding='utf-8') as f:
             categories_list = json.load(f)
         ALL_CATEGORIES = sorted(categories_list, key=len, reverse=True)
         print("✅ Servisler başarıyla başlatıldı.")
-        print(f"Veritabanı çalışma konumu: {DB_LOCAL_PATH}")
+        print(f"Veritabanı çalışma konumu: {DB_PATH}")
         print(f"{len(ALL_CATEGORIES)} kategori yüklendi.")
     except Exception as e:
         print(f"HATA: Servisler başlatılamadı: {e}");
@@ -311,7 +322,6 @@ def chat_handler():
 
 
 # --- UYGULAMAYI BAŞLATMA ---
-# DÜZELTME: Servisler artık uygulama başlar başlamaz yükleniyor.
 initialize_services()
 
 if __name__ == "__main__":
