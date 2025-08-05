@@ -43,7 +43,8 @@ PRICE_RANGE_MULTIPLIER = 0.2
 
 # --- UYGULAMA BAŞLANGICI ---
 app = Flask(__name__)
-CORS(app)
+# DÜZELTME: CORS ayarı, tüm web sitelerinden gelen isteklere izin verecek şekilde güncellendi.
+CORS(app, resources={r"/chat": {"origins": "*"}})
 
 # --- GLOBAL DEĞİŞKENLER ---
 CLIENT = None
