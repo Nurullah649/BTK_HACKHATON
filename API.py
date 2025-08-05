@@ -11,6 +11,7 @@ import json
 import time
 import re
 import random
+import shutil
 from dotenv import load_dotenv
 from flask import Flask, request, jsonify
 from flask_cors import CORS
@@ -23,9 +24,10 @@ GENERATION_MODEL = "gemini-2.5-pro"
 EMBEDDING_MODEL = "models/text-embedding-004"
 CATEGORIES_FILENAME = "kategoriler.json"
 
-# DÜZELTME: DB_PATH artık GCS FUSE ile bağlanan sanal diski gösteriyor.
-# Mount path: /gcs, Bucket içindeki klasör: urun_veritabani
-DB_PATH = "/gcs/urun_veritabani"
+# Veritabanının GCS FUSE ile bağlandığı kaynak yol
+DB_SOURCE_PATH = "/gcs/urun_veritabani"
+# Veritabanının çalışacağı, sunucunun geçici hafızasındaki hedef yol
+DB_LOCAL_PATH = "/tmp/urun_veritabani"
 
 SEARCH_TYPE_DEFAULT = 'default'
 SEARCH_TYPE_FP = 'price_performance'
@@ -49,7 +51,28 @@ DB_FIRESTORE = None
 
 # --- YARDIMCI FONKSİYONLAR ---
 
-# Veritabanı indirme fonksiyonu artık gerekli değil, kaldırıldı.
+def copy_database_from_gcs_fuse():
+    """Veritabanını GCS FUSE mount noktasından yerel /tmp klasörüne kopyalar."""
+    print(f"Veritabanı '{DB_SOURCE_PATH}' konumundan '{DB_LOCAL_PATH}' konumuna kopyalanıyor...")
+
+    # Hedef klasör varsa temizle
+    if os.path.exists(DB_LOCAL_PATH):
+        shutil.rmtree(DB_LOCAL_PATH)
+
+    try:
+        # shutil.copytree ile tüm klasör içeriğini kopyala
+        shutil.copytree(DB_SOURCE_PATH, DB_LOCAL_PATH)
+        print("✅ Veritabanı başarıyla yerel hafızaya kopyalandı.")
+        return True
+    except Exception as e:
+        print(f"HATA: Veritabanı kopyalanırken bir sorun oluştu: {e}")
+        # Hata durumunda kaynak klasörün içeriğini loglayarak hata ayıklamaya yardımcı ol
+        try:
+            print(f"Kaynak klasör içeriği ('{DB_SOURCE_PATH}'): {os.listdir(DB_SOURCE_PATH)}")
+        except Exception as list_e:
+            print(f"Kaynak klasör içeriği listelenemedi: {list_e}")
+        return False
+
 
 def sanitize_collection_name(name):
     if not name: return "diger_kategoriler"
@@ -66,25 +89,29 @@ def sanitize_collection_name(name):
 
 
 def initialize_services():
+    """API ve Veritabanı istemcilerini başlatır."""
     global CLIENT, MODEL, ALL_CATEGORIES, DB_FIRESTORE
-    print(">>> initialize_services fonksiyonu çağrıldı.")
+
+    print(">>> Servisler başlatılıyor... <<<")
     if not API_KEY:
         print("HATA: API_KEY bulunamadı.");
         sys.exit(1)
     try:
-        # 1. ADIM: Veritabanı indirme adımı kaldırıldı.
-        print("Servisler başlatılıyor... (Veritabanı GCS FUSE ile bağlandı)")
+        # 1. ADIM: Veritabanını GCS FUSE'dan yerel diske kopyala
+        if not copy_database_from_gcs_fuse():
+            sys.exit("Veritabanı kopyalanamadığı için uygulama durduruluyor.")
+
+        # 2. ADIM: Servisleri başlat
         genai.configure(api_key=API_KEY)
-        # ChromaDB istemcisi artık doğrudan bağlı diski kullanıyor.
-        CLIENT = chromadb.PersistentClient(path=DB_PATH)
+        # ChromaDB istemcisi artık yerel kopyayı kullanıyor.
+        CLIENT = chromadb.PersistentClient(path=DB_LOCAL_PATH)
         MODEL = genai.GenerativeModel(GENERATION_MODEL)
-        # Firestore istemcisini başlat
         DB_FIRESTORE = firestore.Client()
         with open(CATEGORIES_FILENAME, 'r', encoding='utf-8') as f:
             categories_list = json.load(f)
         ALL_CATEGORIES = sorted(categories_list, key=len, reverse=True)
         print("✅ Servisler başarıyla başlatıldı.")
-        print(f"Veritabanı konumu: {DB_PATH}")
+        print(f"Veritabanı çalışma konumu: {DB_LOCAL_PATH}")
         print(f"{len(ALL_CATEGORIES)} kategori yüklendi.")
     except Exception as e:
         print(f"HATA: Servisler başlatılamadı: {e}");
@@ -211,7 +238,6 @@ def generate_final_prompt(user_question, product_context, history):
             f"- {offer.get('seller_name', 'N/A')}: {offer.get('price', 'N/A')} TL")
     satici_bilgisi = "\n".join(satici_bilgisi_listesi) or "Online satıcı bilgisi bulunamadı."
 
-    # Konuşma geçmişini formata uygun hale getir
     history_text = "\n".join([f"Kullanıcı: {h['user']}\nAsistan: {h['assistant']}" for h in history])
 
     prompt = f"""
@@ -224,7 +250,7 @@ Sen, son derece bilgili, ikna edici ve yardımcı bir "Akıllı Satış Asistan�
 - **Fiyat Bilgileri:**
 {satici_bilgisi}
 - **En Uygun Fiyatlı Satıcı Linki:** {en_ucuz_satici_linki}
-### DAVRAVNIŞ KURALLARI ###
+### DAVRANIŞ KURALLARI ###
 1.  **Bağlamı Kullan:** Cevap verirken hem ### KONUŞMA GEÇMİŞİ ###'ni hem de ### SAĞLANAN BİLGİLER (RAG) ###'i dikkate al.
 2.  **Tek Bilgi Kaynağı:** Cevaplarını oluştururken SADECE sağlanan RAG bilgilerini kullan. DIŞARIDAN BİLGİ EKLEME.
 3.  **Bilgi Eksikliği:** Eğer sorunun cevabı bilgilerde yoksa, "Bu konuda elimdeki bilgilerde net bir cevap bulamadım." de.
@@ -246,21 +272,18 @@ def chat_handler():
     session_id = data['session_id']
     print(f"\n--- Yeni İstek Alındı (Oturum: {session_id}): {user_question} ---")
 
-    # Konuşma geçmişini al
     history = get_conversation_history(session_id)
-
     query_details = extract_query_details(user_question)
 
-    # Eğer yeni sorguda kategori yoksa, geçmişteki son ürünü kullanmayı dene
     if not query_details["collection"] and history:
         last_product_context = history[-1].get("product_context")
         if last_product_context:
             print("Yeni sorguda kategori yok, geçmişteki son ürün kullanılıyor.")
             product_context = last_product_context
             status = "Başarılı (Geçmişten)"
-        else:  # Geçmişte de ürün yoksa, hata ver
+        else:
             product_context, status = get_best_product_match(CLIENT, query_details)
-    else:  # Normal akış
+    else:
         product_context, status = get_best_product_match(CLIENT, query_details)
 
     if not product_context:
@@ -274,11 +297,10 @@ def chat_handler():
         assistant_response = response.text
         print("✅ Model cevabı başarıyla oluşturuldu.")
 
-        # Yeni konuşmayı geçmişe ekle
         history.append({
             "user": user_question,
             "assistant": assistant_response,
-            "product_context": product_context  # Gelecekteki sorgular için ürün bilgisini sakla
+            "product_context": product_context
         })
         save_conversation_history(session_id, history)
 
@@ -289,6 +311,7 @@ def chat_handler():
 
 
 # --- UYGULAMAYI BAŞLATMA ---
+# DÜZELTME: Servisler artık uygulama başlar başlamaz yükleniyor.
 initialize_services()
 
 if __name__ == "__main__":
