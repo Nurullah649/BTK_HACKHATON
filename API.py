@@ -43,7 +43,6 @@ PRICE_RANGE_MULTIPLIER = 0.2
 
 # --- UYGULAMA BAŞLANGICI ---
 app = Flask(__name__)
-# DÜZELTME: CORS ayarı, tüm web sitelerinden gelen isteklere izin verecek şekilde güncellendi.
 CORS(app, resources={r"/chat": {"origins": "*"}})
 
 # --- GLOBAL DEĞİŞKENLER ---
@@ -110,11 +109,8 @@ def initialize_services():
         print("HATA: API_KEY bulunamadı.");
         sys.exit(1)
     try:
-        # 1. ADIM: Veritabanını GCS'den indir
         if not download_database_from_gcs():
             sys.exit("Veritabanı indirilemediği için uygulama durduruluyor.")
-
-        # 2. ADIM: Servisleri başlat
         genai.configure(api_key=API_KEY)
         CLIENT = chromadb.PersistentClient(path=DB_PATH)
         MODEL = genai.GenerativeModel(GENERATION_MODEL)
@@ -131,7 +127,7 @@ def initialize_services():
 
 
 def get_conversation_history(session_id):
-    """Firestore'dan konuşma geçmişini alır."""
+    """Firestore'dan, belirtilen session_id'ye ait konuşma geçmişini alır."""
     try:
         doc_ref = DB_FIRESTORE.collection('conversations').document(session_id)
         doc = doc_ref.get()
@@ -144,7 +140,7 @@ def get_conversation_history(session_id):
 
 
 def save_conversation_history(session_id, history):
-    """Konuşma geçmişini Firestore'a kaydeder."""
+    """Belirtilen session_id için konuşma geçmişini Firestore'a kaydeder."""
     try:
         doc_ref = DB_FIRESTORE.collection('conversations').document(session_id)
         doc_ref.set({'history': history})
@@ -181,9 +177,9 @@ def extract_query_details(query_text):
     search_type = SEARCH_TYPE_DEFAULT
     if 'fiyat performans' in lower_query or 'f/p' in lower_query:
         search_type = SEARCH_TYPE_FP
-    elif 'en ucuz' in lower_query:
+    elif 'daha ucuz' in lower_query or 'en ucuz' in lower_query:
         search_type = SEARCH_TYPE_CHEAPEST
-    elif 'en pahalı' in lower_query:
+    elif 'daha pahalı' in lower_query or 'en pahalı' in lower_query:
         search_type = SEARCH_TYPE_EXPENSIVE
     where_filter = {}
     try:
@@ -287,16 +283,40 @@ def chat_handler():
     history = get_conversation_history(session_id)
     query_details = extract_query_details(user_question)
 
-    if not query_details["collection"] and history:
+    # YENİ VE GELİŞMİŞ HAFIZA MANTIĞI
+    # 1. Durum: Kullanıcı yeni bir ürün araması yapıyor (sorguda kategori var).
+    if query_details["collection"]:
+        print("Yeni bir ürün araması yapılıyor...")
+        product_context, status = get_best_product_match(CLIENT, query_details)
+
+    # 2. Durum: Kullanıcı takip sorusu soruyor (sorguda kategori yok ama geçmiş var).
+    elif history:
         last_product_context = history[-1].get("product_context")
         if last_product_context:
-            print("Yeni sorguda kategori yok, geçmişteki son ürün kullanılıyor.")
-            product_context = last_product_context
-            status = "Başarılı (Geçmişten)"
-        else:
+            # 2a. Durum: "Daha ucuz/pahalı" gibi bir fiyat karşılaştırması.
+            if query_details["search_type"] in [SEARCH_TYPE_CHEAPEST, SEARCH_TYPE_EXPENSIVE]:
+                print("Fiyat karşılaştırması yapılıyor...")
+                query_details["collection"] = sanitize_collection_name(last_product_context.get("subcategory"))
+                query_details["search_text"] = f"{last_product_context.get('product_name', '')} {user_question}"
+                last_price = last_product_context.get("min_price", -1)
+                if last_price > 0:
+                    if query_details["search_type"] == SEARCH_TYPE_CHEAPEST:
+                        query_details["where_filter"] = {"min_price": {"$lt": last_price}}
+                    else:  # SEARCH_TYPE_EXPENSIVE
+                        query_details["where_filter"] = {"min_price": {"$gt": last_price}}
+                product_context, status = get_best_product_match(CLIENT, query_details)
+
+            # 2b. Durum: Genel bir takip sorusu ("özellikleri", "özetle" vb.).
+            else:
+                print("Genel takip sorusu, son ürün bilgileri kullanılıyor.")
+                product_context = last_product_context
+                status = "Başarılı (Geçmişten)"
+        else:  # Geçmiş var ama ürün yok, normal arama.
             product_context, status = get_best_product_match(CLIENT, query_details)
+
+    # 3. Durum: Kategori yok ve geçmiş de yok.
     else:
-        product_context, status = get_best_product_match(CLIENT, query_details)
+        product_context, status = None, "Lütfen sorgunuzda bir ürün kategorisi belirtin."
 
     if not product_context:
         return jsonify(
