@@ -13,7 +13,7 @@ import re
 import random
 import shutil
 from dotenv import load_dotenv
-from flask import Flask, request, jsonify
+from flask import Flask, request, Response, stream_with_context
 from flask_cors import CORS
 # GCS ve Firestore kütüphanelerini import et
 from google.cloud import storage
@@ -24,15 +24,9 @@ API_KEY = "AIzaSyAnI7dxlH0isxzqwqX-qkajlg2UC4zIssU"
 GENERATION_MODEL = "gemini-2.5-pro"
 EMBEDDING_MODEL = "models/text-embedding-004"
 CATEGORIES_FILENAME = "kategoriler.json"
-
-# GCS Bucket adı
 GCS_BUCKET_NAME = "rag-api-veritabani"
-
-# Veritabanının Cloud Run içinde indirileceği geçici konum
 DB_PATH = "/tmp/urun_veritabani"
-# Veritabanının Cloud Storage'daki klasör adı
 DB_SOURCE_FOLDER = "urun_veritabani"
-
 SEARCH_TYPE_DEFAULT = 'default'
 SEARCH_TYPE_FP = 'price_performance'
 SEARCH_TYPE_CHEAPEST = 'cheapest'
@@ -58,27 +52,19 @@ def download_database_from_gcs():
     """Veritabanı dosyalarını Google Cloud Storage'dan indirir."""
     bucket_name = GCS_BUCKET_NAME
     print(f"'{bucket_name}' bucket'ından veritabanı indirilmeye başlanıyor...")
-
-    if os.path.exists(DB_PATH):
-        shutil.rmtree(DB_PATH)
+    if os.path.exists(DB_PATH): shutil.rmtree(DB_PATH)
     os.makedirs(DB_PATH)
-
     try:
         storage_client = storage.Client()
         bucket = storage_client.bucket(bucket_name)
         blobs = bucket.list_blobs(prefix=DB_SOURCE_FOLDER)
-
         file_count = 0
         for blob in blobs:
             if not blob.name.endswith('/'):
                 destination_file_name = os.path.join(DB_PATH, os.path.basename(blob.name))
                 blob.download_to_filename(destination_file_name)
                 file_count += 1
-
-        if file_count == 0:
-            print(f"UYARI: '{bucket_name}/{DB_SOURCE_FOLDER}' içinde indirilecek dosya bulunamadı.")
-            return False
-
+        if file_count == 0: return False
         print(f"✅ Veritabanı başarıyla indirildi. Toplam {file_count} dosya indirildi -> {DB_PATH}")
         return True
     except Exception as e:
@@ -103,11 +89,8 @@ def sanitize_collection_name(name):
 def initialize_services():
     """API ve Veritabanı istemcilerini başlatır."""
     global CLIENT, MODEL, ALL_CATEGORIES, DB_FIRESTORE
-
     print(">>> Servisler başlatılıyor... <<<")
-    if not API_KEY:
-        print("HATA: API_KEY bulunamadı.");
-        sys.exit(1)
+    if not API_KEY: print("HATA: API_KEY bulunamadı."); sys.exit(1)
     try:
         if not download_database_from_gcs():
             sys.exit("Veritabanı indirilemediği için uygulama durduruluyor.")
@@ -119,31 +102,23 @@ def initialize_services():
             categories_list = json.load(f)
         ALL_CATEGORIES = sorted(categories_list, key=len, reverse=True)
         print("✅ Servisler başarıyla başlatıldı.")
-        print(f"Veritabanı çalışma konumu: {DB_PATH}")
-        print(f"{len(ALL_CATEGORIES)} kategori yüklendi.")
     except Exception as e:
         print(f"HATA: Servisler başlatılamadı: {e}");
         sys.exit(1)
 
 
 def get_conversation_history(session_id):
-    """Firestore'dan, belirtilen session_id'ye ait konuşma geçmişini alır."""
     try:
-        doc_ref = DB_FIRESTORE.collection('conversations').document(session_id)
-        doc = doc_ref.get()
-        if doc.exists:
-            return doc.to_dict().get('history', [])
-        return []
+        doc = DB_FIRESTORE.collection('conversations').document(session_id).get()
+        return doc.to_dict().get('history', []) if doc.exists else []
     except Exception as e:
-        print(f"HATA: Konuşma geçmişi alınamadı: {e}")
+        print(f"HATA: Konuşma geçmişi alınamadı: {e}");
         return []
 
 
 def save_conversation_history(session_id, history):
-    """Belirtilen session_id için konuşma geçmişini Firestore'a kaydeder."""
     try:
-        doc_ref = DB_FIRESTORE.collection('conversations').document(session_id)
-        doc_ref.set({'history': history})
+        DB_FIRESTORE.collection('conversations').document(session_id).set({'history': history})
     except Exception as e:
         print(f"HATA: Konuşma geçmişi kaydedilemedi: {e}")
 
@@ -172,7 +147,6 @@ def extract_query_details(query_text):
         category_lower = category.strip().lower()
         if category_lower in lower_query:
             found_category, target_collection = category, sanitize_collection_name(category)
-            print(f"Kategori bulundu: '{found_category}' -> Koleksiyon: '{target_collection}'")
             break
     search_type = SEARCH_TYPE_DEFAULT
     if 'fiyat performans' in lower_query or 'f/p' in lower_query:
@@ -245,10 +219,10 @@ def generate_final_prompt(user_question, product_context, history):
         for offer in valid_offers: satici_bilgisi_listesi.append(
             f"- {offer.get('seller_name', 'N/A')}: {offer.get('price', 'N/A')} TL")
     satici_bilgisi = "\n".join(satici_bilgisi_listesi) or "Online satıcı bilgisi bulunamadı."
-
     history_text = "\n".join([f"Kullanıcı: {h['user']}\nAsistan: {h['assistant']}" for h in history])
 
-    prompt = f"""GÖREV: Akıllı Satış Asistanı
+    # DÜZELTME: Kullanıcının istediği detaylı prompt geri eklendi.
+    return f"""GÖREV: Akıllı Satış Asistanı
 [ROL TANIMLAMA (PERSONA)]
 Sen, son derece bilgili, ikna edici, güvenilir ve proaktif bir "Akıllı Satış Asistanı"sın. Amacın, müşterilere sunduğun ürün hakkında en doğru bilgiyi vererek onları satın almaya teşvik etmek ve tüm sorularını profesyonel bir dille yanıtlamaktır.
 
@@ -285,10 +259,9 @@ Adım 3: Yanıtı Oluştur ve Sun
 
 Ton ve Üslup: İkna edici, samimi, profesyonel ve yardımsever bir dil kullan. Karmaşık teknik detayları herkesin anlayabileceği şekilde basitleştir.
 İçerik: Müşterinin sorusunu doğrudan yanıtla. Cevabında, ürünün özelliklerinin müşteriye sağlayacağı faydaları vurgula. Fiyat karşılaştırması yaparken en uygun seçeneği ve linkini öne çıkar.
-Eylem Çağrısı (Call to Action): Cevabının sonuna, müşteriyi ürünü daha detaylı incelemeye veya satın almaya yönlendiren net bir eylem çağrısı ekle. Örneğin: "Ürünü daha detaylı incelemek ve en uygun fiyattan yararlanmak için bu linki ziyaret edebilirsiniz: {en_ucuz_satici_linki}"
+
 [YENİ KULLANICI SORUSU]
 {user_question}"""
-    return prompt
 
 
 # --- API ENDPOINT ---
@@ -296,72 +269,71 @@ Eylem Çağrısı (Call to Action): Cevabının sonuna, müşteriyi ürünü dah
 def chat_handler():
     data = request.get_json()
     if not data or 'query' not in data or 'session_id' not in data:
-        return jsonify({"error": "Geçersiz istek: 'query' ve 'session_id' alanları zorunludur."}), 400
+        return Response(json.dumps({"error": "Geçersiz istek"}), status=400, mimetype='application/json')
 
     user_question = data['query']
     session_id = data['session_id']
-    print(f"\n--- Yeni İstek Alındı (Oturum: {session_id}): {user_question} ---")
-
     history = get_conversation_history(session_id)
     query_details = extract_query_details(user_question)
 
-    # YENİ VE GELİŞMİŞ HAFIZA MANTIĞI
-    # 1. Durum: Kullanıcı yeni bir ürün araması yapıyor (sorguda kategori var).
-    if query_details["collection"]:
-        print("Yeni bir ürün araması yapılıyor...")
-        product_context, status = get_best_product_match(CLIENT, query_details)
-
-    # 2. Durum: Kullanıcı takip sorusu soruyor (sorguda kategori yok ama geçmiş var).
-    elif history:
+    if not query_details["collection"] and history:
         last_product_context = history[-1].get("product_context")
         if last_product_context:
-            # 2a. Durum: "Daha ucuz/pahalı" gibi bir fiyat karşılaştırması.
             if query_details["search_type"] in [SEARCH_TYPE_CHEAPEST, SEARCH_TYPE_EXPENSIVE]:
-                print("Fiyat karşılaştırması yapılıyor...")
                 query_details["collection"] = sanitize_collection_name(last_product_context.get("subcategory"))
                 query_details["search_text"] = f"{last_product_context.get('product_name', '')} {user_question}"
                 last_price = last_product_context.get("min_price", -1)
                 if last_price > 0:
-                    if query_details["search_type"] == SEARCH_TYPE_CHEAPEST:
-                        query_details["where_filter"] = {"min_price": {"$lt": last_price}}
-                    else:  # SEARCH_TYPE_EXPENSIVE
-                        query_details["where_filter"] = {"min_price": {"$gt": last_price}}
+                    query_details["where_filter"] = {"min_price": {"$lt": last_price}} if query_details[
+                                                                                              "search_type"] == SEARCH_TYPE_CHEAPEST else {
+                        "min_price": {"$gt": last_price}}
                 product_context, status = get_best_product_match(CLIENT, query_details)
-
-            # 2b. Durum: Genel bir takip sorusu ("özellikleri", "özetle" vb.).
             else:
-                print("Genel takip sorusu, son ürün bilgileri kullanılıyor.")
-                product_context = last_product_context
-                status = "Başarılı (Geçmişten)"
-        else:  # Geçmiş var ama ürün yok, normal arama.
+                product_context, status = last_product_context, "Başarılı (Geçmişten)"
+        else:
             product_context, status = get_best_product_match(CLIENT, query_details)
-
-    # 3. Durum: Kategori yok ve geçmiş de yok.
     else:
-        product_context, status = None, "Lütfen sorgunuzda bir ürün kategorisi belirtin."
+        product_context, status = get_best_product_match(CLIENT, query_details)
 
     if not product_context:
-        return jsonify(
-            {"answer": f"Üzgünüm, bu isteğe uygun bir ürün bulamadım. (Sebep: {status})", "product_context": None})
+        return Response(json.dumps(
+            {"answer": f"Üzgünüm, bu isteğe uygun bir ürün bulamadım. (Sebep: {status})", "product_context": None}),
+                        status=200, mimetype='application/json')
 
     final_prompt = generate_final_prompt(user_question, product_context, history)
 
-    try:
-        response = MODEL.generate_content(final_prompt)
-        assistant_response = response.text
-        print("✅ Model cevabı başarıyla oluşturuldu.")
+    # STREAMING İÇİN YENİ YAPI
+    def stream_response():
+        try:
+            # Cevabı stream olarak al
+            response_stream = MODEL.generate_content(final_prompt, stream=True)
 
-        history.append({
-            "user": user_question,
-            "assistant": assistant_response,
-            "product_context": product_context
-        })
-        save_conversation_history(session_id, history)
+            # Ürün bilgisini ilk chunk olarak gönder
+            initial_data = {
+                "product_context": product_context
+            }
+            yield f"data: {json.dumps(initial_data)}\n\n"
 
-        return jsonify({"answer": assistant_response, "product_context": product_context})
-    except Exception as e:
-        print(f"HATA: Google API'den cevap alınırken bir sorun oluştu: {e}")
-        return jsonify({"error": f"Google API'den cevap alınırken bir sorun oluştu: {e}"}), 500
+            # Modelden gelen metin parçalarını anında gönder
+            full_response_text = ""
+            for chunk in response_stream:
+                if chunk.text:
+                    full_response_text += chunk.text
+                    yield f"data: {json.dumps({'answer_chunk': chunk.text})}\n\n"
+
+            # Konuşma geçmişini tam metinle kaydet
+            history.append({
+                "user": user_question,
+                "assistant": full_response_text,
+                "product_context": product_context
+            })
+            save_conversation_history(session_id, history)
+
+        except Exception as e:
+            print(f"HATA: Stream sırasında bir sorun oluştu: {e}")
+            yield f"data: {json.dumps({'error': 'Modelden cevap alınırken bir sorun oluştu.'})}\n\n"
+
+    return Response(stream_with_context(stream_response()), mimetype='text/event-stream')
 
 
 # --- UYGULAMAYI BAŞLATMA ---
