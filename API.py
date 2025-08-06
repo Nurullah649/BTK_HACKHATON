@@ -20,7 +20,8 @@ from google.cloud import storage
 from google.cloud import firestore
 
 # --- SABİTLER VE YAPILANDIRMA ---
-API_KEY = "AIzaSyAnI7dxlH0isxzqwqX-qkajlg2UC4zIssU"
+# Güvenlik için API anahtarını ortam değişkenlerinden almak en iyisidir.
+API_KEY = os.getenv("GOOGLE_API_KEY", "AIzaSyAnI7dxlH0isxzqwqX-qkajlg2UC4zIssU")
 GENERATION_MODEL = "gemini-2.5-pro"
 EMBEDDING_MODEL = "models/text-embedding-004"
 CATEGORIES_FILENAME = "kategoriler.json"
@@ -221,7 +222,6 @@ def generate_final_prompt(user_question, product_context, history):
     satici_bilgisi = "\n".join(satici_bilgisi_listesi) or "Online satıcı bilgisi bulunamadı."
     history_text = "\n".join([f"Kullanıcı: {h['user']}\nAsistan: {h['assistant']}" for h in history])
 
-    # DÜZELTME: Kullanıcının istediği detaylı prompt geri eklendi.
     return f"""GÖREV: Akıllı Satış Asistanı
 [ROL TANIMLAMA (PERSONA)]
 Sen, son derece bilgili, ikna edici, güvenilir ve proaktif bir "Akıllı Satış Asistanı"sın. Amacın, müşterilere sunduğun ürün hakkında en doğru bilgiyi vererek onları satın almaya teşvik etmek ve tüm sorularını profesyonel bir dille yanıtlamaktır.
@@ -236,27 +236,24 @@ Sen, son derece bilgili, ikna edici, güvenilir ve proaktif bir "Akıllı Satı�
 2. Sağlanan Ürün Bilgileri (Bilgi Kaynağı - RAG)
 Yanıtlarını oluştururken temel alacağın tek ve yegane bilgi kaynağı burasıdır.
 <ürün_bilgileri>
-
 Ürün Adı: {urun_adi}
 Ürün Özellikleri: {urun_ozellikleri}
 Fiyat Bilgileri ve Satıcılar:
 {satici_bilgisi}
 En Uygun Fiyatlı Satıcı Linki: {en_ucuz_satici_linki}
 </ürün_bilgileri>
+
 [TALİMATLAR VE SÜREÇ (ADIM ADIM DÜŞÜNME)]
 Müşterinin sorusuna yanıt vermeden önce aşağıdaki adımları sırasıyla takip et:
 Adım 1: Analiz Et
-
 Müşterinin son sorusunun ({user_question}) ne anlama geldiğini ve neyi amaçladığını anla.
 Konuşma geçmişindeki ({history_text}) önceki konularla bağlantısını kur.
 Soruyu yanıtlamak için hangi bilgilere ihtiyacın olduğunu belirle.
 Adım 2: Bilgiyi Değerlendir
-
 İhtiyaç duyduğun bilgilerin <ürün_bilgileri> kaynağında olup olmadığını kontrol et.
 Eğer Bilgi Yeterliyse: Yanıtını sadece ve sadece <ürün_bilgileri> bölümündeki verileri kullanarak oluştur. KESİNLİKLE dışarıdan bilgi ekleme veya varsayımda bulunma.
 Eğer Bilgi Yetersizse: Müşteriye, aradığı bilginin mevcut belgelerde olmadığını belirt. Araştırmaya başlamak için ilk olarak en uygun fiyatlı satıcının linkini ({en_ucuz_satici_linki}) kullan. Ardından, "Sizin için hızlıca bir araştırma yaptım ve şunları buldum:" diyerek bulduğun en alakalı ve güvenilir bilgileri özetleyerek sun.
 Adım 3: Yanıtı Oluştur ve Sun
-
 Ton ve Üslup: İkna edici, samimi, profesyonel ve yardımsever bir dil kullan. Karmaşık teknik detayları herkesin anlayabileceği şekilde basitleştir.
 İçerik: Müşterinin sorusunu doğrudan yanıtla. Cevabında, ürünün özelliklerinin müşteriye sağlayacağı faydaları vurgula. Fiyat karşılaştırması yaparken en uygun seçeneği ve linkini öne çıkar.
 
@@ -296,32 +293,31 @@ def chat_handler():
         product_context, status = get_best_product_match(CLIENT, query_details)
 
     if not product_context:
-        return Response(json.dumps(
-            {"answer": f"Üzgünüm, bu isteğe uygun bir ürün bulamadım. (Sebep: {status})", "product_context": None}),
-                        status=200, mimetype='application/json')
+        # Ürün bulunamadığında bile stream formatında cevap verelim
+        def empty_stream():
+            yield f'2:{{ "error": "Üzgünüm, bu isteğe uygun bir ürün bulamadım. (Sebep: {status})" }}\n'
+
+        return Response(stream_with_context(empty_stream()), mimetype="text/plain; charset=utf-8")
 
     final_prompt = generate_final_prompt(user_question, product_context, history)
 
-    # STREAMING İÇİN YENİ YAPI
+    # STREAMING İÇİN YENİ YAPI (AI SDK v3/v4 UYUMLU)
     def stream_response():
         try:
-            # Cevabı stream olarak al
+            # 1. Önce ürün bilgisini (data) gönder.
+            # AI SDK formatı: '0:' prefix'i ile JSON verisi.
+            yield f'0:{json.dumps(product_context)}\n'
+
+            # 2. Sonra modelden gelen metin akışını gönder.
             response_stream = MODEL.generate_content(final_prompt, stream=True)
-
-            # Ürün bilgisini ilk chunk olarak gönder
-            initial_data = {
-                "product_context": product_context
-            }
-            yield f"data: {json.dumps(initial_data)}\n\n"
-
-            # Modelden gelen metin parçalarını anında gönder
             full_response_text = ""
             for chunk in response_stream:
                 if chunk.text:
+                    # AI SDK formatı: '1:' prefix'i ile metin verisi (JSON olarak encode edilmiş).
                     full_response_text += chunk.text
-                    yield f"data: {json.dumps({'answer_chunk': chunk.text})}\n\n"
+                    yield f'1:{json.dumps(chunk.text)}\n'
 
-            # Konuşma geçmişini tam metinle kaydet
+            # 3. Konuşma geçmişini tam metinle kaydet
             history.append({
                 "user": user_question,
                 "assistant": full_response_text,
@@ -331,9 +327,11 @@ def chat_handler():
 
         except Exception as e:
             print(f"HATA: Stream sırasında bir sorun oluştu: {e}")
-            yield f"data: {json.dumps({'error': 'Modelden cevap alınırken bir sorun oluştu.'})}\n\n"
+            # AI SDK formatı: '2:' prefix'i ile hata JSON'u.
+            yield f'2:{{ "error": "Modelden cevap alınırken bir sorun oluştu." }}\n'
 
-    return Response(stream_with_context(stream_response()), mimetype='text/event-stream')
+    # mimetype 'text/plain' olmalı, AI SDK bunu bekler.
+    return Response(stream_with_context(stream_response()), mimetype='text/plain; charset=utf-8')
 
 
 # --- UYGULAMAYI BAŞLATMA ---
