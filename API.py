@@ -21,7 +21,7 @@ from google.cloud import firestore
 
 # --- SABİTLER VE YAPILANDIRMA ---
 # Güvenlik için API anahtarını ortam değişkenlerinden almak en iyisidir.
-API_KEY = os.getenv("GOOGLE_API_KEY", "AIzaSyAnI7dxlH0isxzqwqX-qkajlg2UC4zIssU")
+
 GENERATION_MODEL = "gemini-2.5-pro"
 EMBEDDING_MODEL = "models/text-embedding-004"
 CATEGORIES_FILENAME = "kategoriler.json"
